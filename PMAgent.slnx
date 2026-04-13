@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PMAgent.Api/PMAgent.Api.csproj" />
+    <Project Path="src/PMAgent.Application/PMAgent.Application.csproj" />
+    <Project Path="src/PMAgent.Domain/PMAgent.Domain.csproj" />
+    <Project Path="src/PMAgent.Infrastructure/PMAgent.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PMAgent.Tests/PMAgent.Tests.csproj" />
+  </Folder>
+</Solution>
