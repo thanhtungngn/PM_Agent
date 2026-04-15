@@ -27,6 +27,7 @@
 ---
 
 ## 🔄 Current Flow
+```text
 User Request
 ↓
 Orchestrator
@@ -34,7 +35,7 @@ Orchestrator
 PO → PM → BA → DEV → TEST
 ↓
 Final Response
-
+```
 
 ---
 
@@ -198,18 +199,53 @@ Final Response
 ---
 
 # 🧩 6. Target Architecture (Future)
+```text
 Client
-↓
+  ↓
 API Gateway
-↓
+  ↓
 Orchestrator
-↓
+  ↓
 Router Agent 🧠
-↓
+  ↓
 Agents (PO/PM/BA/DEV/TEST)
-↓
+  ↓
 Memory Layer (Cache + RAG)
-↓
+  ↓
 LLM Provider
-↓
+  ↓
 MCP Server (Jira / Confluence)
+```
+
+
+---
+
+# 🏁 7. Vision
+
+🔥 Build an **AI Software Team**
+
+Capabilities:
+
+- Understand real-world requirements (Jira, Confluence)
+- Debate & refine solutions
+- Optimize for cost & practicality
+- Assist developers like a real team
+
+---
+
+# 💬 8. Notes
+
+- Keep system modular
+- Prioritize cost control early
+- Treat agents as independent services
+- Measure before optimizing
+
+---
+
+# 🚀 Status
+
+```diff
++ Core system: DONE ✅
+- Optimization: IN PROGRESS ⚙️
+- MCP integration: PLANNED 🔌
+- Smart orchestration: UPCOMING 🧠
