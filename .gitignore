@@ -12,3 +12,6 @@ obj/
 
 # OS files
 .DS_Store
+
+# Secrets — never commit real API keys
+appsettings.Development.json
