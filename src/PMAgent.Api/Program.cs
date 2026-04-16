@@ -1,4 +1,7 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using PMAgent.Infrastructure;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,5 +31,25 @@ app.UseSwaggerUI(options =>
 app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
+
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        var result = JsonSerializer.Serialize(new
+        {
+            status  = report.Status.ToString(),
+            checks  = report.Entries.Select(e => new
+            {
+                name        = e.Key,
+                status      = e.Value.Status.ToString(),
+                description = e.Value.Description,
+                data        = e.Value.Data
+            })
+        }, new JsonSerializerOptions { WriteIndented = true });
+        await ctx.Response.WriteAsync(result);
+    }
+});
 
 app.Run();

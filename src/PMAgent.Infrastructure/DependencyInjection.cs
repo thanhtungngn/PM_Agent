@@ -14,10 +14,18 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // LLM settings + client
+        // LLM settings + client — provider is selected by LlmSettings:Provider
         var llmSettings = configuration.GetSection("LlmSettings").Get<LlmSettings>() ?? new LlmSettings();
         services.AddSingleton(llmSettings);
-        services.AddScoped<ILlmClient, OpenAiLlmClient>();
+
+        if (llmSettings.Provider == LlmProvider.Ollama)
+        {
+            services.AddScoped<ILlmClient, OllamaLlmClient>();
+            services.AddHealthChecks()
+                    .AddCheck<OllamaHealthCheck>("ollama", tags: ["ready"]);
+        }
+        else
+            services.AddScoped<ILlmClient, OpenAiLlmClient>();
 
         // Simple rule-based planner (legacy endpoint)
         services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>();

@@ -447,6 +447,86 @@ Calls the rule-based `RuleBasedAgentPlanner`. Returns a flat `PlanningResponse` 
 
 ---
 
+## LLM Provider
+
+All agents share a single `ILlmClient` abstraction. The concrete implementation is selected at startup based on `LlmSettings:Provider` in `appsettings.json`.
+
+| Provider value | Implementation class | When to use |
+|---|---|---|
+| `OpenAI` _(default)_ | `OpenAiLlmClient` | Production — requires `ApiKey` |
+| `Ollama` | `OllamaLlmClient` | Local development — zero cost, runs on local hardware |
+
+### Configuration
+
+```json
+// appsettings.json  (production default)
+"LlmSettings": {
+  "Provider": "OpenAI",
+  "ApiKey":   "<your-openai-api-key>",
+  "Model":    "gpt-4o",
+  "OllamaBaseUrl": "http://localhost:11434",
+  "OllamaModel":   "llama3.2"
+}
+```
+
+```json
+// appsettings.Development.json  (local development — overrides Provider only)
+"LlmSettings": {
+  "Provider":      "Ollama",
+  "OllamaBaseUrl": "http://localhost:11434",
+  "OllamaModel":   "llama3.2"
+}
+```
+
+### LlmSettings model
+
+```csharp
+// src/PMAgent.Application/Models/LlmSettings.cs
+public enum LlmProvider { OpenAI, Ollama }
+
+public sealed class LlmSettings
+{
+    public LlmProvider Provider     { get; init; } = LlmProvider.OpenAI;
+    // OpenAI
+    public string ApiKey            { get; init; } = string.Empty;
+    public string Model             { get; init; } = "gpt-4o";
+    // Ollama
+    public string OllamaBaseUrl     { get; init; } = "http://localhost:11434";
+    public string OllamaModel       { get; init; } = "llama3.2";
+}
+```
+
+### How DI selects the provider
+
+```csharp
+// src/PMAgent.Infrastructure/DependencyInjection.cs
+if (llmSettings.Provider == LlmProvider.Ollama)
+    services.AddScoped<ILlmClient, OllamaLlmClient>();
+else
+    services.AddScoped<ILlmClient, OpenAiLlmClient>();
+```
+
+### Adding a new LLM provider
+
+1. Create a class implementing `ILlmClient` in `src/PMAgent.Infrastructure/`.
+2. Add a new value to the `LlmProvider` enum in `LlmSettings.cs`.
+3. Add a `case` branch in `DependencyInjection.cs`.
+4. Update this table above.
+
+### Setting up Ollama locally
+
+```bash
+# 1. Install Ollama  →  https://ollama.com/download
+# 2. Pull the model you want to use
+ollama pull llama3.2
+# 3. Verify it is running
+ollama list
+# 4. Start the API — Development profile automatically uses Ollama
+dotnet run --project src/PMAgent.Api --launch-profile Development
+```
+
+---
+
 ## Dependency Injection
 
 ```csharp
@@ -456,6 +536,12 @@ builder.Services.AddInfrastructure();
 
 ```csharp
 // src/PMAgent.Infrastructure/DependencyInjection.cs
+// ILlmClient — provider selected at startup from LlmSettings:Provider
+if (llmSettings.Provider == LlmProvider.Ollama)
+    services.AddScoped<ILlmClient, OllamaLlmClient>();  // local / zero-cost
+else
+    services.AddScoped<ILlmClient, OpenAiLlmClient>();  // production
+
 services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>(); // legacy endpoint
 
 services.AddScoped<IAgentTool, ScopeAnalysisTool>();        // registered as IAgentTool
