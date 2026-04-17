@@ -29,6 +29,7 @@ public static class DependencyInjection
 
         // Simple rule-based planner (legacy endpoint)
         services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>();
+        services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>();
 
         // Agent tools — registered as IAgentTool so they are all resolved
         // by IEnumerable<IAgentTool> inside AgentExecutor.

@@ -121,7 +121,11 @@ record AgentTask(
 record AgentTaskResult(
     string Role,    // Role token of the agent that produced this result
     string Output,  // Markdown-formatted deliverable from that agent
-    bool   Success  // Whether the agent completed its task successfully
+  bool   Success, // Whether the agent completed its task successfully
+  string Decision = "continue", // Routing recommendation: continue|stop|escalate
+  double Confidence = 0.8, // Confidence score in [0.0..1.0]
+  IReadOnlyCollection<string>? Issues = null, // Blocking issues for routing decisions
+  string NextAction = "continue" // Suggested next transition for the orchestrator
 );
 ```
 
@@ -204,6 +208,17 @@ Task<OrchestrationResult> RunAsync(OrchestrationRequest request, CancellationTok
 
 Implemented by `OrchestratorAgent`. Coordinates all `ISpecializedAgent` instances in sequence.
 
+### `IAgentRoutingPolicy`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IAgentRoutingPolicy.cs
+IReadOnlyList<string> BuildInitialRoute(OrchestrationRequest request);
+bool ShouldEarlyStop(IReadOnlyCollection<AgentTaskResult> completedResults);
+bool ShouldFallbackToFullChain(IReadOnlyCollection<AgentTaskResult> completedResults);
+```
+
+Implemented by `RuleBasedAgentRoutingPolicy`. Provides the baseline routing matrix and transition guards (early-stop and fallback).
+
 ---
 
 ## Built-in Tools
@@ -262,19 +277,23 @@ All agents live in `src/PMAgent.Infrastructure/Agents/`.
 
 ### Orchestrator dispatch sequence
 
+Detailed implementation planning for dynamic routing is tracked in [docs/Routing/plan.md](Routing/plan.md).
+
+Dispatch is now route-aware:
+- The orchestrator asks `IAgentRoutingPolicy` for an initial route.
+- It can early-stop when a high-confidence `stop` decision is produced.
+- It can fallback to the full-chain route when confidence drops, escalation is requested, or an agent fails.
+
 ```
 OrchestratorAgent.RunAsync(OrchestrationRequest)
 │
-├── AgentTask("PO",   brief, context)    → ProductOwnerAgent
-│   └── appends PO output to context
-├── AgentTask("PM",   brief, context+PO) → ProjectManagerAgent
-│   └── appends PM output to context
-├── AgentTask("BA",   brief, context+PM) → BusinessAnalystAgent
-│   └── appends BA output to context
-├── AgentTask("DEV",  brief, context+BA) → DeveloperAgent
-│   └── appends DEV output to context
-└── AgentTask("TEST", brief, context+DEV)→ TesterAgent
-    └── builds OrchestrationResult(Summary, AgentOutputs)
+├── route = IAgentRoutingPolicy.BuildInitialRoute(request)
+├── while route has pending roles
+│   ├── dispatch AgentTask(role, brief, accumulatedContext)
+│   ├── append output to accumulatedContext
+│   ├── if ShouldFallbackToFullChain(results) => enqueue missing full-chain roles
+│   └── if ShouldEarlyStop(results) => break
+└── builds OrchestrationResult(Summary, AgentOutputs)
 ```
 
 ### How to add a new specialized agent
@@ -425,11 +444,24 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
 {
   "summary": "# Project Orchestration Summary\n\n**Brief:** Build a SaaS...\n...",
   "agentOutputs": [
-    { "role": "PO",   "output": "## Product Owner Output...", "success": true },
-    { "role": "PM",   "output": "## Project Manager Output...", "success": true },
-    { "role": "BA",   "output": "## Business Analyst Output...", "success": true },
-    { "role": "DEV",  "output": "## Developer Output...", "success": true },
-    { "role": "TEST", "output": "## Tester Output...", "success": true }
+    {
+      "role": "PO",
+      "output": "## Product Owner Output...",
+      "success": true,
+      "decision": "continue",
+      "confidence": 0.8,
+      "issues": [],
+      "nextAction": "continue"
+    },
+    {
+      "role": "PM",
+      "output": "## Project Manager Output...",
+      "success": true,
+      "decision": "continue",
+      "confidence": 0.8,
+      "issues": [],
+      "nextAction": "continue"
+    }
   ]
 }
 ```
@@ -543,6 +575,7 @@ else
     services.AddScoped<ILlmClient, OpenAiLlmClient>();  // production
 
 services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>(); // legacy endpoint
+services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>(); // baseline dynamic route rules
 
 services.AddScoped<IAgentTool, ScopeAnalysisTool>();        // registered as IAgentTool
 services.AddScoped<IAgentTool, RiskAssessmentTool>();        // all resolved together
@@ -596,3 +629,10 @@ dotnet test PMAgent.slnx
 | `OrchestratorAgentTests` | `RunAsync_DEV_OutputContainsArchitecture` | DEV output contains "Architecture" |
 | `OrchestratorAgentTests` | `RunAsync_TEST_OutputContainsTestPlan` | TEST output contains "Test Plan" |
 | `OrchestratorAgentTests` | `RunAsync_EmptyBrief_ThrowsArgumentException` | Empty brief throws `ArgumentException` |
+| `OrchestratorAgentTests` | `RunAsync_AllAgentsExposeRoutingMetadata` | Every output includes routing metadata defaults |
+| `OrchestratorAgentTests` | `RunAsync_PlanningIntent_SkipsDevAndTest` | Planning intent route excludes DEV and TEST |
+| `RoutingPolicyTests` | `BuildInitialRoute_PlanningIntent_ReturnsPoPmBa` | Planning intent uses PO → PM → BA route |
+| `RoutingPolicyTests` | `BuildInitialRoute_BuildIntent_ReturnsPoBaDevTest` | Build intent uses PO → BA → DEV → TEST route |
+| `RoutingPolicyTests` | `BuildInitialRoute_HighComplexity_ReturnsFullChain` | High-complexity briefs use full-chain route |
+| `RoutingPolicyTests` | `ShouldEarlyStop_StopDecisionWithHighConfidence_ReturnsTrue` | High-confidence stop decision triggers early-stop |
+| `RoutingPolicyTests` | `ShouldFallbackToFullChain_EscalateDecision_ReturnsTrue` | Escalate decision triggers full-chain fallback |

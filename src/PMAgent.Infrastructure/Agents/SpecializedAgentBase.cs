@@ -39,7 +39,14 @@ public abstract class SpecializedAgentBase : ISpecializedAgent
             Role, sw.ElapsedMilliseconds, output.Length);
         _logger.LogDebug("[{Role}] Output:\n{Output}", Role, output);
 
-        return new AgentTaskResult(Role, output, true);
+        return new AgentTaskResult(
+            Role,
+            output,
+            true,
+            Decision: "continue",
+            Confidence: 0.8,
+            Issues: [],
+            NextAction: "continue");
     }
 
     private static string BuildUserMessage(AgentTask task) =>

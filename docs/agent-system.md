@@ -7,3 +7,4 @@
 |---|---|
 | Developers & architects | [docs/technical.md](technical.md) |
 | Product owners, BAs, project managers | [docs/business.md](business.md) |
+| Routing implementation planning | [docs/Routing/plan.md](Routing/plan.md) |

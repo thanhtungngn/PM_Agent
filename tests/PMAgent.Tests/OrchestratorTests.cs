@@ -3,6 +3,7 @@ using PMAgent.Application.Abstractions;
 using PMAgent.Application.Models;
 using PMAgent.Infrastructure;
 using PMAgent.Infrastructure.Agents;
+using PMAgent.Infrastructure.Services;
 
 namespace PMAgent.Tests;
 
@@ -35,6 +36,7 @@ public class OrchestratorAgentTests
     private static OrchestratorAgent BuildOrchestrator()
     {
         var llm = new FakeLlmClient();
+        var routingPolicy = new RuleBasedAgentRoutingPolicy();
         return new(
             [
                 new ProductOwnerAgent(llm, NullLogger<ProductOwnerAgent>.Instance),
@@ -43,6 +45,7 @@ public class OrchestratorAgentTests
                 new DeveloperAgent(llm, NullLogger<DeveloperAgent>.Instance),
                 new TesterAgent(llm, NullLogger<TesterAgent>.Instance)
             ],
+            routingPolicy,
             NullLogger<OrchestratorAgent>.Instance);
     }
 
@@ -50,7 +53,7 @@ public class OrchestratorAgentTests
     public async Task RunAsync_RunsAllFiveAgents()
     {
         var orchestrator = BuildOrchestrator();
-        var request = new OrchestrationRequest("Build a project management SaaS tool");
+        var request = new OrchestrationRequest("Build an enterprise multi-tenant project management SaaS tool with external integration");
 
         var result = await orchestrator.RunAsync(request);
 
@@ -61,7 +64,7 @@ public class OrchestratorAgentTests
     public async Task RunAsync_OutputContainsAllRoles()
     {
         var orchestrator = BuildOrchestrator();
-        var request = new OrchestrationRequest("Build an e-commerce platform");
+        var request = new OrchestrationRequest("Build an enterprise e-commerce platform with compliance and migration requirements");
 
         var result = await orchestrator.RunAsync(request);
 
@@ -83,6 +86,23 @@ public class OrchestratorAgentTests
 
         Assert.All(result.AgentOutputs, r =>
             Assert.True(r.Success, $"Agent '{r.Role}' must report Success = true."));
+    }
+
+    [Fact]
+    public async Task RunAsync_AllAgentsExposeRoutingMetadata()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest("Design a reporting module");
+
+        var result = await orchestrator.RunAsync(request);
+
+        Assert.All(result.AgentOutputs, r =>
+        {
+            Assert.Equal("continue", r.Decision);
+            Assert.InRange(r.Confidence, 0.0, 1.0);
+            Assert.NotNull(r.Issues);
+            Assert.Equal("continue", r.NextAction);
+        });
     }
 
     [Fact]
@@ -114,7 +134,7 @@ public class OrchestratorAgentTests
     public async Task RunAsync_PM_OutputContainsMilestones()
     {
         var orchestrator = BuildOrchestrator();
-        var request = new OrchestrationRequest("Build a CRM system");
+        var request = new OrchestrationRequest("Create a milestone roadmap for CRM system launch");
 
         var result = await orchestrator.RunAsync(request);
 
@@ -166,5 +186,21 @@ public class OrchestratorAgentTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             orchestrator.RunAsync(request));
+    }
+
+    [Fact]
+    public async Task RunAsync_PlanningIntent_SkipsDevAndTest()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest("Create a roadmap and milestone plan for the next release");
+
+        var result = await orchestrator.RunAsync(request);
+
+        var roles = result.AgentOutputs.Select(r => r.Role).ToList();
+        Assert.Contains("PO", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("PM", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("BA", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DEV", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("TEST", roles, StringComparer.OrdinalIgnoreCase);
     }
 }

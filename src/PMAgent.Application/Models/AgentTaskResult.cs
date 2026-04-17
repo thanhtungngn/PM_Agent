@@ -6,4 +6,8 @@ namespace PMAgent.Application.Models;
 public sealed record AgentTaskResult(
     string Role,
     string Output,
-    bool Success);
+    bool Success,
+    string Decision = "continue",
+    double Confidence = 0.8,
+    IReadOnlyCollection<string>? Issues = null,
+    string NextAction = "continue");

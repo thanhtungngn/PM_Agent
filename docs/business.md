@@ -59,7 +59,7 @@ In practice, a planning run looks like this:
 
 ### Orchestrator — Full Team Simulation
 
-The orchestrator mode dispatches the project brief to a virtual start-up delivery team in sequence:
+The orchestrator mode dispatches the project brief to a virtual start-up delivery team using a dynamic route. For complex projects it can run the full chain, and for focused requests it can run only the required roles.
 
 | Role | What they produce |
 |---|---|
@@ -69,7 +69,7 @@ The orchestrator mode dispatches the project brief to a virtual start-up deliver
 | **DEV** (Developer) | Tech stack choice, architecture, API design, implementation approach |
 | **TEST** (Tester) | Test plan, quality gates, coverage targets, sample test cases |
 
-Each role builds on what the previous roles produced, so the DEV's architecture is shaped by the BA's requirements, and the TEST's quality gates are aligned with the DEV's tech stack choices.
+Each selected role builds on what the previous selected roles produced, so the DEV's architecture is shaped by the BA's requirements, and the TEST's quality gates are aligned with the DEV's tech stack choices.
 
 ---
 
@@ -116,6 +116,15 @@ Send a `POST` request to `/api/orchestrator/run` with three fields:
 ```
 
 The response contains a `summary` and five `agentOutputs` — one per role — each with the full deliverable for that role.
+
+Each orchestrated `agentOutput` now includes routing metadata used for dynamic orchestration:
+
+| Field | Meaning |
+|---|---|
+| `decision` | Agent routing recommendation (`continue`, `stop`, `escalate`) |
+| `confidence` | Confidence score from `0.0` to `1.0` |
+| `issues` | Explicit blockers or concerns that can change route selection |
+| `nextAction` | Suggested next transition for the orchestrator |
 
 ---
 

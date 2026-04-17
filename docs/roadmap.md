@@ -4,6 +4,8 @@
 **Pattern:** Orchestrator → Specialized Agents  
 **Team simulation:** PO · PM · BA · DEV · TEST
 
+**Implementation plan:** [Routing plan](Routing/plan.md)
+
 ---
 
 ## Vision
@@ -185,7 +187,7 @@ Each agent:
 | Enhancement | Description |
 |---|---|
 | LLM-backed agents | Replace rule-based `ExecuteAsync` with an LLM call (OpenAI, Azure OpenAI, Ollama) |
-| Parallel agent dispatch | Run independent agents (DEV + TEST) in parallel with `Task.WhenAll` |
+| Parallel agent dispatch | Run independent agents (DEV + TEST) in parallel with `Task.WhenAll`; see [Routing plan](Routing/plan.md) |
 | Agent-to-agent feedback loops | Allow TEST to send feedback back to DEV for revision |
 | Persistent agent memory | Store `OrchestrationResult` in a database per project |
 | Agent specialization by domain | Spin up domain-specific sub-agents (e.g., mobile DEV vs. backend DEV) |

@@ -16,11 +16,16 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
     private static readonly string[] AgentOrder = ["PO", "PM", "BA", "DEV", "TEST"];
 
     private readonly IReadOnlyDictionary<string, ISpecializedAgent> _agents;
+    private readonly IAgentRoutingPolicy _routingPolicy;
     private readonly ILogger<OrchestratorAgent> _logger;
 
-    public OrchestratorAgent(IEnumerable<ISpecializedAgent> agents, ILogger<OrchestratorAgent> logger)
+    public OrchestratorAgent(
+        IEnumerable<ISpecializedAgent> agents,
+        IAgentRoutingPolicy routingPolicy,
+        ILogger<OrchestratorAgent> logger)
     {
         _agents = agents.ToDictionary(a => a.Role, StringComparer.OrdinalIgnoreCase);
+        _routingPolicy = routingPolicy;
         _logger = logger;
     }
 
@@ -36,10 +41,18 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
 
         var results = new List<AgentTaskResult>();
         var accumulatedContext = request.Context;
+        var executedRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pendingRoles = new Queue<string>(_routingPolicy.BuildInitialRoute(request));
 
-        foreach (var role in AgentOrder)
+        _logger.LogInformation("[Orchestrator] Initial route: {Route}", string.Join(" -> ", pendingRoles));
+
+        while (pendingRoles.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var role = pendingRoles.Dequeue();
+
+            if (!executedRoles.Add(role))
+                continue;
 
             if (!_agents.TryGetValue(role, out var agent))
             {
@@ -62,6 +75,18 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
 
             // Forward this agent's output as context to the next agent.
             accumulatedContext = $"{accumulatedContext}\n\n[{role}]:\n{result.Output}";
+
+            if (_routingPolicy.ShouldFallbackToFullChain(results))
+            {
+                _logger.LogWarning("[Orchestrator] Routing fallback triggered. Enqueuing full chain remainder.");
+                EnqueueMissingRoles(pendingRoles, executedRoles, AgentOrder);
+            }
+
+            if (_routingPolicy.ShouldEarlyStop(results))
+            {
+                _logger.LogInformation("[Orchestrator] Early-stop triggered after role {Role}.", role);
+                break;
+            }
         }
 
         totalSw.Stop();
@@ -97,5 +122,17 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
         var line = text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                        .FirstOrDefault(l => !l.StartsWith('#') && !string.IsNullOrWhiteSpace(l));
         return line?.Trim() ?? string.Empty;
+    }
+
+    private static void EnqueueMissingRoles(
+        Queue<string> pendingRoles,
+        HashSet<string> executedRoles,
+        IEnumerable<string> fullChain)
+    {
+        foreach (var role in fullChain)
+        {
+            if (!executedRoles.Contains(role) && !pendingRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
+                pendingRoles.Enqueue(role);
+        }
     }
 }
