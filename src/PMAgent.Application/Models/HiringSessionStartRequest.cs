@@ -5,5 +5,6 @@ public sealed record HiringSessionStartRequest(
     string JobDescription,
     string CandidateCv,
     string Context = "",
+    string TargetSeniority = "AUTO",
     string TechnicalInterviewRole = "DEV",
     bool AutoApproveInterviewSchedule = true);

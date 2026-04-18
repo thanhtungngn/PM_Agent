@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using PMAgent.Application.Abstractions;
+using PMAgent.Application.Abstractions.Harness;
 using PMAgent.Application.Models;
 using PMAgent.Infrastructure.Agents;
+using PMAgent.Infrastructure.Harness;
 using PMAgent.Infrastructure.Services;
 using PMAgent.Infrastructure.Tools;
 
@@ -18,7 +20,9 @@ public static class DependencyInjection
 
         // LLM settings + client — provider is selected by LlmSettings:Provider
         var llmSettings = configuration.GetSection("LlmSettings").Get<LlmSettings>() ?? new LlmSettings();
+        var hiringWorkflowSettings = configuration.GetSection("HiringWorkflow").Get<HiringWorkflowSettings>() ?? HiringWorkflowSettings.CreateDefault();
         services.AddSingleton(llmSettings);
+        services.AddSingleton(hiringWorkflowSettings);
 
         if (llmSettings.Provider == LlmProvider.Ollama)
         {
@@ -31,6 +35,8 @@ public static class DependencyInjection
         // Simple rule-based planner (legacy endpoint)
         services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>();
         services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>();
+        services.AddScoped<IHiringFitScoringAgent, LlmHiringFitScoringAgent>();
+        services.AddScoped<IInterviewQuestionProvider, ConfigurableInterviewQuestionProvider>();
         services.AddScoped<IInterviewScoringAgent, LlmInterviewScoringAgent>();
         services.AddScoped<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
@@ -54,6 +60,13 @@ public static class DependencyInjection
 
         // Orchestrator
         services.AddScoped<IOrchestratorAgent, OrchestratorAgent>();
+
+        // Harness layer
+        services.AddSingleton<IHarnessScenarioProvider, DefaultHarnessScenarioProvider>();
+        services.AddScoped<IHarnessAssertionEngine, HarnessAssertionEngine>();
+        services.AddScoped<IHarnessReportSink, JsonHarnessReportSink>();
+        services.AddScoped<IHarnessReportSink, MarkdownHarnessReportSink>();
+        services.AddScoped<IHarnessRunner, HarnessRunner>();
 
         return services;
     }

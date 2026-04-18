@@ -2,14 +2,13 @@ using PMAgent.Application.Models;
 
 namespace PMAgent.Application.Abstractions;
 
-public interface IInterviewScoringAgent
+public interface IHiringFitScoringAgent
 {
-    Task<InterviewScoreResult> EvaluateAsync(
+    Task<HiringFitAssessmentResult> EvaluateAsync(
         string projectBrief,
         string jobDescription,
+        string candidateCv,
         string targetSeniority,
         string technicalInterviewRole,
-        IReadOnlyCollection<HiringTranscriptTurn> transcript,
-        int candidateResponseCount,
         CancellationToken cancellationToken = default);
 }

@@ -12,6 +12,7 @@ const elements = {
     candidateCv: document.getElementById("candidateCv"),
     candidateCvFile: document.getElementById("candidateCvFile"),
     technicalInterviewRole: document.getElementById("technicalInterviewRole"),
+    targetSeniority: document.getElementById("targetSeniority"),
     autoApproveInterviewSchedule: document.getElementById("autoApproveInterviewSchedule"),
     sessionPanel: document.getElementById("sessionPanel"),
     sessionStage: document.getElementById("sessionStage"),
@@ -56,6 +57,7 @@ const presets = {
         context: "Remote-first team, two interviewers available this week.",
         jobDescription: "Strong C#, ASP.NET Core, PostgreSQL, API design, cloud deployment, and production support experience.",
         candidateCv: "6 years building .NET APIs, PostgreSQL tuning, Docker, Azure, CI/CD, and incident response leadership.",
+        targetSeniority: "SENIOR",
         technicalInterviewRole: "DEV",
         autoApproveInterviewSchedule: true
     },
@@ -65,6 +67,7 @@ const presets = {
         context: "Need automation ownership and strong regression strategy.",
         jobDescription: "Need API testing, Playwright, CI pipelines, exploratory testing, and defect triage experience.",
         candidateCv: "Candidate has Playwright, Postman, REST API automation, Azure DevOps pipelines, and regression leadership.",
+        targetSeniority: "MID",
         technicalInterviewRole: "TEST",
         autoApproveInterviewSchedule: true
     }
@@ -291,6 +294,7 @@ function getFormState() {
         maxIterationsPerAgent: Number.parseInt(elements.iterations.value, 10) || 10,
         jobDescription: elements.jobDescription.value,
         candidateCv: elements.candidateCv.value,
+        targetSeniority: elements.targetSeniority.value,
         technicalInterviewRole: elements.technicalInterviewRole.value,
         autoApproveInterviewSchedule: elements.autoApproveInterviewSchedule.checked
     };
@@ -308,6 +312,7 @@ function buildPayload(prompt) {
     if (formState.workflow === "hiring") {
         payload.jobDescription = formState.jobDescription.trim();
         payload.candidateCv = formState.candidateCv.trim();
+        payload.targetSeniority = formState.targetSeniority;
         payload.technicalInterviewRoles = getTechnicalInterviewRoles();
     }
 
@@ -321,6 +326,7 @@ function buildHiringStartPayload(prompt) {
         jobDescription: formState.jobDescription.trim(),
         candidateCv: formState.candidateCv.trim(),
         context: formState.context.trim(),
+        targetSeniority: formState.targetSeniority,
         technicalInterviewRole: formState.technicalInterviewRole,
         autoApproveInterviewSchedule: formState.autoApproveInterviewSchedule
     };
@@ -347,8 +353,14 @@ function restoreFormState() {
         elements.context.value = formState.context || "";
         elements.jobDescription.value = formState.jobDescription || "";
         elements.candidateCv.value = formState.candidateCv || "";
-        elements.roleDev.checked = (formState.technicalInterviewRoles || []).includes("DEV");
-        elements.roleTest.checked = (formState.technicalInterviewRoles || []).includes("TEST");
+        elements.targetSeniority.value = formState.targetSeniority || "AUTO";
+        const legacyTechnicalRoles = Array.isArray(formState.technicalInterviewRoles)
+            ? formState.technicalInterviewRoles
+            : [];
+        elements.technicalInterviewRole.value = formState.technicalInterviewRole
+            || legacyTechnicalRoles[0]
+            || "DEV";
+        elements.autoApproveInterviewSchedule.checked = formState.autoApproveInterviewSchedule ?? true;
         elements.prompt.value = formState.prompt || "";
     }
     catch {
@@ -426,6 +438,7 @@ function loadHistoryEntry(entry) {
         maxIterationsPerAgent: entry.payloadSent?.maxIterationsPerAgent || 10,
         jobDescription: entry.payloadSent?.jobDescription || "",
         candidateCv: entry.payloadSent?.candidateCv || "",
+        targetSeniority: entry.payloadSent?.targetSeniority || "AUTO",
         technicalInterviewRole: entry.payloadSent?.technicalInterviewRole || "DEV",
         autoApproveInterviewSchedule: entry.payloadSent?.autoApproveInterviewSchedule ?? true
     });
@@ -450,6 +463,7 @@ function applyPresetState(preset) {
     elements.iterations.value = String(preset.maxIterationsPerAgent || 10);
     elements.jobDescription.value = preset.jobDescription || "";
     elements.candidateCv.value = preset.candidateCv || "";
+    elements.targetSeniority.value = preset.targetSeniority || "AUTO";
     elements.technicalInterviewRole.value = preset.technicalInterviewRole || "DEV";
     elements.autoApproveInterviewSchedule.checked = preset.autoApproveInterviewSchedule ?? true;
     syncHiringPanel();
@@ -481,6 +495,8 @@ function buildSessionMarkdown(session) {
 **Stage:** ${session.stage}
 
 **Status:** ${session.statusSummary}
+
+**Seniority Target:** ${session.seniorityLevel || "AUTO"}
 
 **Current Speaker:** ${session.currentSpeaker}
 
@@ -795,6 +811,7 @@ function registerFormPersistence() {
         elements.context,
         elements.jobDescription,
         elements.candidateCv,
+        elements.targetSeniority,
         elements.technicalInterviewRole,
         elements.autoApproveInterviewSchedule,
         elements.prompt
@@ -831,10 +848,12 @@ function restoreConversationEntry(item) {
 
 function bindFileUploads() {
     elements.jobDescriptionFile.addEventListener("change", async () => {
-        await hydrateTextareaFromFile(elements.jobDescriptionFile.files[0], elements.jobDescription);
+        await hydrateTextareaFromFile(elements.jobDescriptionFile.files?.[0], elements.jobDescription);
+        elements.jobDescriptionFile.value = "";
     });
     elements.candidateCvFile.addEventListener("change", async () => {
-        await hydrateTextareaFromFile(elements.candidateCvFile.files[0], elements.candidateCv);
+        await hydrateTextareaFromFile(elements.candidateCvFile.files?.[0], elements.candidateCv);
+        elements.candidateCvFile.value = "";
     });
 }
 

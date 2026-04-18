@@ -13,22 +13,29 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
     private const string InterviewActiveStage = "interview_active";
     private const string CompletedStage = "completed";
     private const string RejectedStage = "rejected";
-    private const double ScreeningPassThreshold = 70;
-    private const int MinimumResponsesBeforeEarlyStop = 2;
 
     private static readonly string[] SupportedTechnicalRoles = ["DEV", "TEST"];
     private static readonly ConcurrentDictionary<Guid, HiringSessionState> Sessions = new();
 
+    private readonly IHiringFitScoringAgent _fitScoringAgent;
     private readonly IInterviewScoringAgent _scoringAgent;
+    private readonly IInterviewQuestionProvider _questionProvider;
+    private readonly HiringWorkflowSettings _settings;
     private readonly ILogger<InMemoryHiringWorkflowService> _logger;
     private readonly string _notesRootPath;
 
     public InMemoryHiringWorkflowService(
+        IHiringFitScoringAgent fitScoringAgent,
         IInterviewScoringAgent scoringAgent,
+        IInterviewQuestionProvider questionProvider,
+        HiringWorkflowSettings settings,
         ILogger<InMemoryHiringWorkflowService> logger,
         string? notesRootPath = null)
     {
+        _fitScoringAgent = fitScoringAgent;
         _scoringAgent = scoringAgent;
+        _questionProvider = questionProvider;
+        _settings = settings;
         _logger = logger;
         _notesRootPath = notesRootPath ?? ResolveNotesRootPath();
         Directory.CreateDirectory(_notesRootPath);
@@ -40,29 +47,42 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         return Task.FromResult(Sessions.TryGetValue(sessionId, out var state) ? ToResult(state) : null);
     }
 
-    public Task<HiringSessionResult> StartAsync(HiringSessionStartRequest request, CancellationToken cancellationToken = default)
+    public async Task<HiringSessionResult> StartAsync(HiringSessionStartRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var technicalRole = NormalizeTechnicalRole(request.TechnicalInterviewRole);
         var state = new HiringSessionState(request, technicalRole);
-        state.ScreeningFitScore = CalculateFitScore(request.JobDescription, request.CandidateCv);
+        state.SeniorityLevel = HiringSeniorityResolver.ResolveLevel(request.TargetSeniority, request.ProjectBrief, request.JobDescription, request.CandidateCv, _settings.Scoring);
+        state.ConversationLanguage = HiringConversationLanguageResolver.ResolveInitialLanguage(request.ProjectBrief, request.JobDescription, request.CandidateCv, request.Context);
+        var fitAssessment = await _fitScoringAgent.EvaluateAsync(
+            request.ProjectBrief,
+            request.JobDescription,
+            request.CandidateCv,
+            state.SeniorityLevel,
+            technicalRole,
+            cancellationToken);
+
+        state.ScreeningFitScore = fitAssessment.Score;
+        state.ScreeningSummary = fitAssessment.Summary;
+        state.ScreeningStrengths.AddRange(fitAssessment.Strengths);
+        state.ScreeningGaps.AddRange(fitAssessment.Gaps);
         state.Participants.Add("HR");
 
         // Create per-candidate folder and write keyword files for reuse during the interview
         CreateCandidateFolder(state);
 
-        var screeningSummary = BuildScreeningSummary(request, state.ScreeningFitScore, technicalRole);
+        var screeningSummary = BuildScreeningSummary(state);
         AddTurn(state, "HR", screeningSummary);
 
-        if (state.ScreeningFitScore < ScreeningPassThreshold)
+        if (!fitAssessment.ShouldAdvance || state.ScreeningFitScore < _settings.ScreeningPassThreshold)
         {
             state.Stage = RejectedStage;
             state.StatusSummary = "HR screening rejected the candidate because fit is below the threshold.";
             state.CurrentSpeaker = "HR";
-            state.CurrentPrompt = "The screening fit is below 70%, so the process stops here.";
+            state.CurrentPrompt = $"The screening fit is below {_settings.ScreeningPassThreshold:F0}%, so the process stops here.";
             WriteNotesFile(state);
-            return Task.FromResult(ToResult(state));
+            return ToResult(state);
         }
 
         state.Stage = AwaitingScreeningApprovalStage;
@@ -74,10 +94,10 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
 
         Sessions[state.SessionId] = state;
         _logger.LogInformation("[HiringWorkflow] Started session {SessionId} with screening fit {FitScore}", state.SessionId, state.ScreeningFitScore);
-        return Task.FromResult(ToResult(state));
+        return ToResult(state);
     }
 
-    public Task<HiringSessionResult> ApproveScreeningAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken cancellationToken = default)
+    public async Task<HiringSessionResult> ApproveScreeningAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var state = GetRequiredSession(sessionId);
@@ -96,7 +116,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             state.CurrentPrompt = "The hiring workflow stops because the user did not approve forwarding the CV.";
             state.StatusSummary = "User stopped the process after HR screening.";
             WriteNotesFile(state);
-            return Task.FromResult(ToResult(state));
+            return ToResult(state);
         }
 
         state.Participants.Clear();
@@ -108,9 +128,9 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         if (state.Request.AutoApproveInterviewSchedule)
         {
             AddTurn(state, "USER", "Interview schedule approved automatically by default.");
-            BeginInterview(state);
+            await BeginInterviewAsync(state, cancellationToken);
             state.StatusSummary = "Interview schedule auto-approved. Interview started immediately.";
-            return Task.FromResult(ToResult(state));
+            return ToResult(state);
         }
 
         state.Stage = AwaitingInterviewApprovalStage;
@@ -119,10 +139,10 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         state.CurrentSpeaker = "PM";
         state.CurrentPrompt = "PM has prepared the interview schedule. Do you approve starting the interview?";
         state.StatusSummary = "Waiting for user approval to start the interview.";
-        return Task.FromResult(ToResult(state));
+        return ToResult(state);
     }
 
-    public Task<HiringSessionResult> ApproveInterviewScheduleAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken cancellationToken = default)
+    public async Task<HiringSessionResult> ApproveInterviewScheduleAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var state = GetRequiredSession(sessionId);
@@ -141,12 +161,12 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             state.CurrentPrompt = "The interview was not approved to proceed.";
             state.StatusSummary = "Interview schedule was rejected by the user.";
             WriteNotesFile(state);
-            return Task.FromResult(ToResult(state));
+            return ToResult(state);
         }
 
-        BeginInterview(state);
+        await BeginInterviewAsync(state, cancellationToken);
         state.StatusSummary = "Interview approved. Panel introductions completed and candidate introduction requested.";
-        return Task.FromResult(ToResult(state));
+        return ToResult(state);
     }
 
     public async Task<HiringSessionResult> SubmitCandidateResponseAsync(Guid sessionId, HiringCandidateResponseRequest request, CancellationToken cancellationToken = default)
@@ -162,25 +182,35 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
 
         var message = request.Message.Trim();
 
-        // If the candidate is requesting a hint through the flag, redirect to hint logic
-        if (request.IsHintRequest)
+        state.ConversationLanguage = HiringConversationLanguageResolver.ResolveUpdatedLanguage(state.ConversationLanguage, message);
+
+        // If the candidate is requesting a hint through the flag or natural language, redirect to hint logic
+        if (request.IsHintRequest || IsHintRequestMessage(message))
             return await RequestHintAsync(sessionId, cancellationToken);
 
-        // Detect clarification question from the candidate
-        if (IsClarificationOrQuestion(message) && !state.WaitingForClarificationAnswer)
+        // Detect question or clarification from the candidate and answer conversationally.
+        if (IsClarificationOrQuestion(message))
         {
-            // The interviewer answers the clarification; the same main question stays active
             state.WaitingForClarificationAnswer = true;
             state.PendingClarificationFrom = state.CurrentSpeaker;
             AddTurn(state, "CANDIDATE", message);
             AppendQaEntry(state, "CANDIDATE", message);
+            WriteNotesFile(state);
 
-            var clarificationReply = BuildClarificationReply(state, message);
-            state.CurrentPrompt = clarificationReply;
-            AddTurn(state, state.CurrentSpeaker, clarificationReply);
-            AppendQaEntry(state, state.CurrentSpeaker, clarificationReply);
+            var interviewerReply = await _questionProvider.BuildInterviewerReplyFromNotesAsync(
+                state.Request,
+                state.TechnicalInterviewRole,
+                state.CurrentSpeaker,
+                message,
+                state.NotesDocumentPath,
+                cancellationToken);
 
-            state.StatusSummary = "Interviewer answered the candidate's clarification. Please continue with your answer.";
+            state.CurrentPrompt = interviewerReply;
+            AddTurn(state, state.CurrentSpeaker, interviewerReply);
+            AppendQaEntry(state, state.CurrentSpeaker, interviewerReply);
+            state.WaitingForClarificationAnswer = false;
+
+            state.StatusSummary = BuildClarificationStatusSummary(state.ConversationLanguage);
             return ToResult(state);
         }
 
@@ -195,15 +225,16 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         var score = await _scoringAgent.EvaluateAsync(
             state.Request.ProjectBrief,
             state.Request.JobDescription,
+            state.SeniorityLevel,
             state.TechnicalInterviewRole,
             state.Transcript,
             state.CandidateResponseCount,
             cancellationToken);
 
         state.InterviewScore = score.Score;
-        AddTurn(state, "EVAL", score.Rationale);
+        AddTurn(state, "EVAL", BuildEvaluationSummary(score));
 
-        if (score.ShouldStop && state.CandidateResponseCount >= MinimumResponsesBeforeEarlyStop)
+        if (score.ShouldStop && state.CandidateResponseCount >= _settings.Scoring.MinimumResponsesBeforeStop)
         {
             CompleteInterview(state, "Interview stopped early because the score dropped below the acceptable threshold.");
             return ToResult(state);
@@ -222,13 +253,13 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         }
 
         // Move to next question or close
-        if (state.PendingSteps.Count == 0)
+        if (state.PendingQuestionPlan.Count == 0)
         {
             CompleteInterview(state, "Interview objectives have been covered. Moving to Q/A and closing.");
             return ToResult(state);
         }
 
-        MoveToNextQuestion(state);
+        await MoveToNextQuestionAsync(state, cancellationToken);
         state.StatusSummary = $"Interview in progress. Current speaker: {state.CurrentSpeaker}.";
         return ToResult(state);
     }
@@ -246,23 +277,36 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
 
         if (hints.Count > 0)
         {
-            var selectedHints = hints.Take(3).ToArray();
-            hintText = $"Here are a few keywords that might help: {string.Join(", ", selectedHints)}. Take your time and try to explain what you know.";
+            var selectedHints = hints.Take(_settings.HintKeywordCount).ToArray();
+            hintText = IsVietnamese(state)
+                ? $"Mình gợi ý cho bạn vài ý ngắn để suy nghĩ tiếp: {string.Join(", ", selectedHints)}. Bạn cứ trả lời theo cách hiểu của mình nhé."
+                : $"Here are a few prompts that might help: {string.Join(", ", selectedHints)}. Take your time and explain how you think about the problem.";
         }
         else
         {
             // Derive hints from the matched JD/CV keywords stored in the candidate folder
-            var derivedHints = ExtractKeywords(state.Request.JobDescription).Take(3).ToArray();
-            hintText = derivedHints.Length > 0
-                ? $"Consider these keywords from the job description: {string.Join(", ", derivedHints)}. Try to connect them to your experience."
-                : "Think about the most relevant experience you have and how it applies to this question.";
+            var derivedHints = ExtractKeywords(state.Request.JobDescription).Take(_settings.HintKeywordCount).ToArray();
+            if (IsVietnamese(state))
+            {
+                hintText = derivedHints.Length > 0
+                    ? $"Bạn có thể thử bám vào các ý này: {string.Join(", ", derivedHints)}. Hãy liên hệ với kinh nghiệm thực tế của bạn."
+                    : "Bạn cứ nghĩ về ví dụ gần nhất trong công việc của mình và liên hệ nó với câu hỏi này.";
+            }
+            else
+            {
+                hintText = derivedHints.Length > 0
+                    ? $"Consider these cues from the job description: {string.Join(", ", derivedHints)}. Try to connect them to your experience and reasoning."
+                    : "Think about the most relevant experience you have and how it applies to this question.";
+            }
         }
 
         state.HintCountForCurrentQuestion++;
         AddTurn(state, state.CurrentSpeaker, hintText);
         AppendQaEntry(state, state.CurrentSpeaker, $"[HINT] {hintText}");
         state.CurrentPrompt = hintText;
-        state.StatusSummary = $"Hint provided. Hint count for this question: {state.HintCountForCurrentQuestion}.";
+        state.StatusSummary = IsVietnamese(state)
+            ? $"Đã cung cấp gợi ý. Số lần gợi ý cho câu hỏi hiện tại: {state.HintCountForCurrentQuestion}."
+            : $"Hint provided. Hint count for this question: {state.HintCountForCurrentQuestion}.";
 
         return Task.FromResult(ToResult(state));
     }
@@ -274,66 +318,6 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
 
         var normalized = technicalInterviewRole.Trim().ToUpperInvariant();
         return SupportedTechnicalRoles.Contains(normalized, StringComparer.OrdinalIgnoreCase) ? normalized : "DEV";
-    }
-
-    private static double CalculateFitScore(string jobDescription, string candidateCv)
-    {
-        var jdKeywords = ExtractKeywords(jobDescription);
-        var cvKeywords = ExtractKeywords(candidateCv);
-        if (jdKeywords.Count == 0)
-            return 0;
-
-        var matches = jdKeywords.Intersect(cvKeywords, StringComparer.OrdinalIgnoreCase).Count();
-        var keywordScore = (double)matches / jdKeywords.Count * 100;
-        var capabilityScore = CalculateCapabilityScore(jobDescription, candidateCv);
-
-        var evidenceBoost = Math.Min(20, CountEvidenceSignals(candidateCv) * 4);
-        return Math.Clamp(Math.Max(keywordScore, capabilityScore) + evidenceBoost, 0, 100);
-    }
-
-    private static int CountEvidenceSignals(string candidateCv)
-    {
-        var lower = candidateCv.ToLowerInvariant();
-        var signals = new[] { "built", "led", "implemented", "deployed", "automated", "optimized", "designed", "improved" };
-        return signals.Count(lower.Contains);
-    }
-
-    private static double CalculateCapabilityScore(string jobDescription, string candidateCv)
-    {
-        var jdCapabilities = ExtractCapabilities(jobDescription);
-        if (jdCapabilities.Count == 0)
-            return 0;
-
-        var cvCapabilities = ExtractCapabilities(candidateCv);
-        var matches = jdCapabilities.Intersect(cvCapabilities, StringComparer.OrdinalIgnoreCase).Count();
-        return (double)matches / jdCapabilities.Count * 100;
-    }
-
-    private static HashSet<string> ExtractCapabilities(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        var capabilities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        AddCapability(capabilities, lower, "csharp", "c#", "csharp");
-        AddCapability(capabilities, lower, "dotnet", ".net", "asp.net", "dotnet");
-        AddCapability(capabilities, lower, "api", " api", "apis", "rest api", "restful");
-        AddCapability(capabilities, lower, "postgresql", "postgresql", "postgres");
-        AddCapability(capabilities, lower, "docker", "docker");
-        AddCapability(capabilities, lower, "deployment", "deploy", "deployment", "production", "release", "cloud", "azure", "aws", "gcp", "pipeline", "devops", "ci/cd", "ci", "cd");
-        AddCapability(capabilities, lower, "design", "design", "architecture", "architect");
-        AddCapability(capabilities, lower, "testing", "test", "testing", "qa");
-        AddCapability(capabilities, lower, "playwright", "playwright");
-        AddCapability(capabilities, lower, "regression", "regression");
-        AddCapability(capabilities, lower, "automation", "automation", "automated", "automate");
-        AddCapability(capabilities, lower, "strategy", "strategy", "planning", "plan");
-
-        return capabilities;
-    }
-
-    private static void AddCapability(HashSet<string> capabilities, string text, string capability, params string[] signals)
-    {
-        if (signals.Any(text.Contains))
-            capabilities.Add(capability);
     }
 
     private static HashSet<string> ExtractKeywords(string text)
@@ -384,19 +368,25 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         };
     }
 
-    private static string BuildScreeningSummary(HiringSessionStartRequest request, double fitScore, string technicalRole)
+    private static string BuildScreeningSummary(HiringSessionState state)
     {
-        var matchedKeywords = ExtractKeywords(request.JobDescription)
-            .Intersect(ExtractKeywords(request.CandidateCv), StringComparer.OrdinalIgnoreCase)
-            .Take(8);
+        var strengths = state.ScreeningStrengths.Count > 0
+            ? string.Join(", ", state.ScreeningStrengths)
+            : "No strong evidence captured.";
+
+        var gaps = state.ScreeningGaps.Count > 0
+            ? string.Join(", ", state.ScreeningGaps)
+            : "No major gaps identified.";
 
         return $"""
             HR screening summary
 
-            - Fit score: {fitScore:F1}%
-            - Target technical interviewer: {technicalRole}
-            - Matched keywords: {string.Join(", ", matchedKeywords)}
-            - Next action: {(fitScore >= ScreeningPassThreshold ? "Ask the user whether HR may forward the CV to PM, BA, and the technical interviewer." : "Stop the process because fit is below threshold.")}
+            - Fit score: {state.ScreeningFitScore:F1}%
+            - Seniority target: {state.SeniorityLevel}
+            - Target technical interviewer: {state.TechnicalInterviewRole}
+            - Summary: {state.ScreeningSummary}
+            - Strengths: {strengths}
+            - Gaps: {gaps}
             """;
     }
 
@@ -406,62 +396,48 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             PM scheduling summary
 
             - Panel: PM, HR, BA, {state.TechnicalInterviewRole}
+            - Seniority target: {state.SeniorityLevel}
             - Flow: introductions -> candidate introduction -> PM project overview -> technical questions -> BA scenario -> Q/A -> closing
             - Default behavior: interview can start immediately unless the user wants to pause for schedule approval.
             - Required approval: confirm whether PM should proceed to the interview stage.
             """;
     }
 
-    private void BeginInterview(HiringSessionState state)
+    private async Task BeginInterviewAsync(HiringSessionState state, CancellationToken cancellationToken)
     {
         state.Stage = InterviewActiveStage;
         state.RequiresUserApproval = false;
         state.ApprovalType = string.Empty;
 
-        AddTurn(state, "HR", "Hello, I am the HR interviewer. I will screen communication signals and keep the interview notes.");
-        AddTurn(state, "PM", $"Hello, I am the PM interviewer. Our project brief is: {state.Request.ProjectBrief}");
-        AddTurn(state, state.TechnicalInterviewRole, $"Hello, I am the {state.TechnicalInterviewRole} interviewer. I will focus on the technical depth relevant to this role.");
-        AddTurn(state, "BA", "Hello, I am the BA interviewer. I will ask about stakeholder scenarios and requirement handling.");
+        AddTurn(state, "HR", BuildPanelIntroduction(state, "HR"));
+        AddTurn(state, "PM", BuildPanelIntroduction(state, "PM"));
+        AddTurn(state, state.TechnicalInterviewRole, BuildPanelIntroduction(state, state.TechnicalInterviewRole));
+        AddTurn(state, "BA", BuildPanelIntroduction(state, "BA"));
 
-        state.PendingSteps.Clear();
-        state.PendingSteps.Enqueue(InterviewQuestion.Simple("PM",
-            "Please introduce yourself and summarize the experience most relevant to this role."));
-        state.PendingSteps.Enqueue(InterviewQuestion.WithFollowUp("PM",
-            $"Let me briefly introduce the project: {state.Request.ProjectBrief}. Based on this context, what part of the project would you expect to own or contribute to first?",
-            "Can you elaborate on how you would approach the early days — what would you prioritise to make an impact quickly?",
-            ["roadmap", "stakeholders", "onboarding", "quick wins", "delivery scope"]));
-        state.PendingSteps.Enqueue(BuildTechnicalQuestion(state.TechnicalInterviewRole, state.Request.JobDescription, state.Request.CandidateCv));
-        state.PendingSteps.Enqueue(InterviewQuestion.WithFollowUp("BA",
-            BuildBaScenarioQuestionText(state.Request.ProjectBrief),
-            "How do you document and communicate the impact of such a scope change to the broader team?",
-            ["change log", "RACI", "impact assessment", "stakeholder update", "decision record"]));
-        state.PendingSteps.Enqueue(InterviewQuestion.Simple("HR",
-            "We are moving to Q/A. What questions do you have for the team, or what else would you like to add before we close?"));
+        state.PendingQuestionPlan.Clear();
+        for (var index = 1; index <= _settings.GeneralQuestionCount; index++)
+            state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("PM", index));
 
-        MoveToNextQuestion(state);
+        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion(state.TechnicalInterviewRole, 1));
+        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("BA", 1));
+        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("HR", 1));
+
+        await MoveToNextQuestionAsync(state, cancellationToken);
     }
 
-    private static InterviewQuestion BuildTechnicalQuestion(string technicalRole, string jobDescription, string candidateCv)
+    private static string BuildEvaluationSummary(InterviewScoreResult score)
     {
-        var keywords = ExtractKeywords($"{jobDescription} {candidateCv}").Take(5).ToArray();
-        var topicText = keywords.Length == 0 ? "your most relevant technical work" : string.Join(", ", keywords);
-        var hintKeywords = keywords.Concat(ExtractKeywords(jobDescription).Take(3)).Distinct().Take(6).ToList();
+        var builder = new StringBuilder();
+        builder.Append(score.Rationale);
 
-        return technicalRole switch
+        if (score.Dimensions is { Count: > 0 })
         {
-            "TEST" => InterviewQuestion.WithFollowUp(technicalRole,
-                $"From a QA perspective, walk us through how you would design a test strategy for a system involving {topicText}. Focus on automation, regression, and release confidence.",
-                "What metrics would you track to prove that release quality is improving iteration over iteration?",
-                hintKeywords),
-            _ => InterviewQuestion.WithFollowUp(technicalRole,
-                $"From an engineering perspective, walk us through a technical decision you made involving {topicText}. Explain the trade-offs, architecture choices, and how you validated the result.",
-                "If you had to make that decision again with 6 more months of hindsight, what would you change?",
-                hintKeywords)
-        };
-    }
+            builder.Append(" Dimensions: ");
+            builder.Append(string.Join("; ", score.Dimensions.Select(dimension => $"{dimension.Name}={dimension.Score:F0} ({dimension.Summary})")));
+        }
 
-    private static string BuildBaScenarioQuestionText(string projectBrief) =>
-        $"Imagine you joined the project '{projectBrief}' and a key stakeholder changed requirements late in the cycle. How would you clarify impact, negotiate priorities, and keep delivery aligned?";
+        return builder.ToString();
+    }
 
     private static string BuildHrInterviewNote(HiringSessionState state, string candidateMessage)
     {
@@ -478,19 +454,70 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             || lower.Contains("can you explain")
             || lower.Contains("do you mean")
             || lower.Contains("what is meant by")
-            || lower.StartsWith("does that mean");
+            || lower.StartsWith("does that mean")
+            || lower.Contains("nghĩa là gì")
+            || lower.Contains("làm rõ")
+            || lower.Contains("giải thích")
+            || lower.Contains("đây là câu hỏi")
+            || lower.Contains("day la cau hoi")
+            || lower.Contains("bạn có thể")
+            || lower.Contains("ban co the");
     }
 
-    private static string BuildClarificationReply(HiringSessionState state, string candidateQuestion)
+    private static bool IsHintRequestMessage(string message)
     {
-        // Build a context-aware clarification using the stored keywords from the candidate folder
-        var jdKeywords = ExtractKeywords(state.Request.JobDescription).Take(5);
-        return $"Good question. To clarify: the question focuses on {string.Join(", ", jdKeywords)} in the context of {state.Request.ProjectBrief}. Please continue with your answer when ready.";
+        var lower = message.Trim().ToLowerInvariant();
+        return lower.Contains("hint")
+            || lower.Contains("gợi ý")
+            || lower.Contains("goi y")
+            || lower.Contains("từ khóa")
+            || lower.Contains("tu khoa")
+            || lower.Contains("give me a hint")
+            || lower.Contains("need a hint");
     }
 
-    private void MoveToNextQuestion(HiringSessionState state)
+    private static string BuildClarificationStatusSummary(string language) =>
+        string.Equals(language, "VI", StringComparison.OrdinalIgnoreCase)
+            ? "Interviewer đã phản hồi câu hỏi của ứng viên. Bạn có thể tiếp tục trả lời."
+            : "Interviewer answered the candidate's question. Please continue with your answer.";
+
+    private static string BuildPanelIntroduction(HiringSessionState state, string speaker)
     {
-        var question = state.PendingSteps.Dequeue();
+        if (IsVietnamese(state))
+        {
+            return speaker switch
+            {
+                "HR" => "Chào bạn, tôi là HR interviewer. Tôi sẽ theo dõi cách giao tiếp và ghi lại interview notes.",
+                "PM" => $"Chào bạn, tôi là PM interviewer. Bối cảnh dự án của buổi hôm nay là: {state.Request.ProjectBrief}",
+                "BA" => "Chào bạn, tôi là BA interviewer. Tôi sẽ hỏi về cách bạn làm rõ yêu cầu, xử lý thay đổi và phối hợp với stakeholder.",
+                _ => $"Chào bạn, tôi là {speaker} interviewer. Tôi sẽ đi sâu vào phần năng lực kỹ thuật phù hợp với vai trò này."
+            };
+        }
+
+        return speaker switch
+        {
+            "HR" => "Hello, I am the HR interviewer. I will screen communication signals and keep the interview notes.",
+            "PM" => $"Hello, I am the PM interviewer. Our project brief is: {state.Request.ProjectBrief}",
+            "BA" => "Hello, I am the BA interviewer. I will ask about stakeholder scenarios and requirement handling.",
+            _ => $"Hello, I am the {speaker} interviewer. I will focus on the technical depth relevant to this role."
+        };
+    }
+
+    private static bool IsVietnamese(HiringSessionState state) => string.Equals(state.ConversationLanguage, "VI", StringComparison.OrdinalIgnoreCase);
+
+    private async Task MoveToNextQuestionAsync(HiringSessionState state, CancellationToken cancellationToken)
+    {
+        WriteNotesFile(state);
+
+        var planned = state.PendingQuestionPlan.Dequeue();
+        var question = await _questionProvider.BuildQuestionFromNotesAsync(
+            state.Request,
+            state.TechnicalInterviewRole,
+            planned.Speaker,
+            planned.QuestionNumber,
+            state.NotesDocumentPath,
+            cancellationToken);
+
         state.ActiveQuestion = question;
         state.FollowUpAsked = false;
         state.HintCountForCurrentQuestion = 0;
@@ -507,10 +534,16 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         state.RequiresUserApproval = false;
         state.ApprovalType = string.Empty;
         state.CurrentSpeaker = "HR";
-        state.CurrentPrompt = "Thank you for your time. We are moving into closing and will follow up after reviewing the notes.";
+        state.CurrentPrompt = IsVietnamese(state)
+            ? "Cảm ơn bạn đã tham gia. Bên mình sẽ tổng hợp notes và phản hồi bước tiếp theo sau khi review."
+            : "Thank you for your time. We are moving into closing and will follow up after reviewing the notes.";
         state.StatusSummary = completionReason;
-        AddTurn(state, "PM", "That concludes the interview on our side. Thank you for the discussion.");
-        AddTurn(state, "HR", "We are now closing the session. Thank you, and we will share next steps after the review.");
+        AddTurn(state, "PM", IsVietnamese(state)
+            ? "Phần trao đổi từ phía bên mình tạm kết thúc tại đây. Cảm ơn bạn đã chia sẻ."
+            : "That concludes the interview on our side. Thank you for the discussion.");
+        AddTurn(state, "HR", IsVietnamese(state)
+            ? "Bên mình sẽ đóng buổi interview tại đây và cập nhật bước tiếp theo sau khi review nội bộ. Cảm ơn bạn."
+            : "We are now closing the session. Thank you, and we will share next steps after the review.");
         WriteNotesFile(state);
     }
 
@@ -532,6 +565,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             jdContent.AppendLine("# JD Keywords");
             jdContent.AppendLine();
             jdContent.AppendLine($"SessionId: {state.SessionId}");
+            jdContent.AppendLine($"SeniorityLevel: {state.SeniorityLevel}");
             jdContent.AppendLine($"TechnicalInterviewRole: {state.TechnicalInterviewRole}");
             jdContent.AppendLine();
             jdContent.AppendLine("## All keywords");
@@ -546,6 +580,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             cvContent.AppendLine("# CV Keywords");
             cvContent.AppendLine();
             cvContent.AppendLine($"SessionId: {state.SessionId}");
+            cvContent.AppendLine($"SeniorityLevel: {state.SeniorityLevel}");
             cvContent.AppendLine();
             cvContent.AppendLine("## Matched with JD");
             foreach (var kw in matched) cvContent.AppendLine($"- {kw}");
@@ -565,6 +600,8 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             qaHeader.AppendLine();
             qaHeader.AppendLine($"SessionId: {state.SessionId}");
             qaHeader.AppendLine($"ProjectBrief: {state.Request.ProjectBrief}");
+            qaHeader.AppendLine($"SeniorityLevel: {state.SeniorityLevel}");
+            qaHeader.AppendLine($"ConversationLanguage: {state.ConversationLanguage}");
             qaHeader.AppendLine($"TechnicalInterviewRole: {state.TechnicalInterviewRole}");
             qaHeader.AppendLine($"Started: {DateTimeOffset.UtcNow:O}");
             qaHeader.AppendLine();
@@ -610,6 +647,8 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         markdown.AppendLine($"- SessionId: {state.SessionId}");
         markdown.AppendLine($"- Stage: {state.Stage}");
         markdown.AppendLine($"- ProjectBrief: {state.Request.ProjectBrief}");
+        markdown.AppendLine($"- SeniorityLevel: {state.SeniorityLevel}");
+        markdown.AppendLine($"- ConversationLanguage: {state.ConversationLanguage}");
         markdown.AppendLine($"- TechnicalInterviewRole: {state.TechnicalInterviewRole}");
         markdown.AppendLine($"- ScreeningFitScore: {state.ScreeningFitScore:F1}");
         markdown.AppendLine($"- InterviewScore: {state.InterviewScore:F1}");
@@ -658,6 +697,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             state.CurrentSpeaker,
             state.CurrentPrompt,
             state.StatusSummary,
+            state.SeniorityLevel,
             state.TechnicalInterviewRole,
             state.NotesDocumentPath,
             state.Participants.ToArray(),
@@ -700,10 +740,15 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         public bool RequiresUserApproval { get; set; }
         public string ApprovalType { get; set; } = string.Empty;
         public double ScreeningFitScore { get; set; }
+        public string ScreeningSummary { get; set; } = string.Empty;
+        public List<string> ScreeningStrengths { get; } = [];
+        public List<string> ScreeningGaps { get; } = [];
         public double InterviewScore { get; set; }
         public string CurrentSpeaker { get; set; } = string.Empty;
         public string CurrentPrompt { get; set; } = string.Empty;
         public string StatusSummary { get; set; } = string.Empty;
+        public string SeniorityLevel { get; set; } = "MID";
+        public string ConversationLanguage { get; set; } = "EN";
         public string TechnicalInterviewRole { get; }
         public string NotesDocumentPath { get; set; } = string.Empty;
         public string CandidateFolder { get; set; } = string.Empty;
@@ -711,7 +756,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         public int CandidateResponseCount { get; set; }
         public List<string> Participants { get; } = [];
         public List<HiringTranscriptTurn> Transcript { get; } = [];
-        public Queue<InterviewQuestion> PendingSteps { get; } = new();
+        public Queue<PlannedInterviewQuestion> PendingQuestionPlan { get; } = new();
         // Follow-up tracking for the active question
         public InterviewQuestion? ActiveQuestion { get; set; }
         public bool FollowUpAsked { get; set; }
@@ -719,4 +764,6 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         public bool WaitingForClarificationAnswer { get; set; }
         public string? PendingClarificationFrom { get; set; }
     }
+
+    private sealed record PlannedInterviewQuestion(string Speaker, int QuestionNumber);
 }

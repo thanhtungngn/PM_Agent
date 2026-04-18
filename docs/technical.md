@@ -13,9 +13,17 @@ PMAgent.slnx
 │   ├── PMAgent.Api              → HTTP controllers, request validation,
 │   │                              static browser chat UI and hiring session console in wwwroot/
 │   ├── PMAgent.Application      → Interfaces + data models (no implementation)
+│   │   ├── Abstractions/
+│   │   │   ├── Harness/         → IHarnessScenarioProvider, IHarnessRunner,
+│   │   │   │                      IHarnessAssertionEngine, IHarnessReportSink
+│   │   │   └── ...              → IAgentTool, IAgentExecutor, IOrchestratorAgent, etc.
+│   │   └── Models/
+│   │       ├── Harness/         → HarnessScenario, HarnessAssertion,
+│   │       │                      HarnessScenarioResult, HarnessReport
+│   │       └── ...              → AgentStep, AgentRunRequest, InterviewQuestion, etc.
 │   ├── PMAgent.Domain           → Domain entities (extensible placeholder)
 │   └── PMAgent.Infrastructure   → AgentExecutor, OrchestratorAgent,
-│                                  Tools/, Agents/, DI registration
+│                                  Tools/, Agents/, Harness/, DI registration
 └── tests/
     └── PMAgent.Tests            → xUnit unit tests
 ```
@@ -164,6 +172,7 @@ record HiringSessionStartRequest(
   string JobDescription,
   string CandidateCv,
   string Context = "",
+  string TargetSeniority = "AUTO",
   string TechnicalInterviewRole = "DEV",
   bool AutoApproveInterviewSchedule = true
 );
@@ -183,8 +192,13 @@ record HiringApprovalRequest(
 
 ```csharp
 // src/PMAgent.Application/Models/HiringCandidateResponseRequest.cs
-record HiringCandidateResponseRequest(string Message);
+record HiringCandidateResponseRequest(
+  string Message,
+  bool IsHintRequest = false  // true → return hint keywords instead of advancing the question
+);
 ```
+
+Natural-language hint requests are also detected at runtime, so the flag is optional when the candidate asks for a hint directly in the interview language.
 
 ### `HiringSessionResult`
 
@@ -200,12 +214,150 @@ record HiringSessionResult(
   string CurrentSpeaker,
   string CurrentPrompt,
   string StatusSummary,
+  string SeniorityLevel,
   string TechnicalInterviewRole,
   string NotesDocumentPath,
   IReadOnlyCollection<string> Participants,
-  IReadOnlyCollection<HiringTranscriptTurn> Transcript
+  IReadOnlyCollection<HiringTranscriptTurn> Transcript,
+  bool FollowUpAvailable,       // true → a follow-up question is ready after the current answer
+  string? PendingFollowUp,      // the follow-up question text, if FollowUpAvailable
+  string CandidateFolder        // path to the per-candidate folder created at session start
 );
 ```
+
+### `InterviewQuestion`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewQuestion.cs
+sealed record InterviewQuestion(
+  string Speaker,
+  string Text,
+  string? FollowUpText,               // optional follow-up asked after the primary answer
+  IReadOnlyList<string> HintKeywords  // keywords returned when the candidate requests a hint
+)
+{
+  static InterviewQuestion Simple(string speaker, string text);
+  static InterviewQuestion WithFollowUp(string speaker, string text, string followUpText,
+                                        IReadOnlyList<string>? hintKeywords = null);
+}
+```
+
+### `InterviewQuestionTemplate`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewQuestionTemplate.cs
+sealed record InterviewQuestionTemplate
+{
+  string Speaker;
+  string TextTemplate;
+  string? FollowUpTemplate;
+  List<string> HintKeywords;
+  string AppliesToTechnicalRole;
+}
+```
+
+### `HiringWorkflowSettings`
+
+```csharp
+// src/PMAgent.Application/Models/HiringWorkflowSettings.cs
+sealed record HiringWorkflowSettings
+{
+  double ScreeningPassThreshold;
+  int HintKeywordCount;
+  int GeneralQuestionCount;
+  List<InterviewQuestionTemplate> GeneralQuestions;
+  List<InterviewQuestionTemplate> TechnicalQuestions;
+  List<InterviewQuestionTemplate> BusinessQuestions;
+  List<InterviewQuestionTemplate> ClosingQuestions;
+  InterviewScoringSettings Scoring;
+}
+```
+
+The configured question templates now act as fallback structure only. `ConfigurableInterviewQuestionProvider` first asks the LLM to generate the full staged interview pack, including PM, technical, BA, and HR questions plus tailored follow-ups. If the model output is invalid or incomplete, the provider falls back to the configured templates. It also resolves a hiring seniority target from the request or inferred hiring context so question scope stays aligned to `JUNIOR`, `MID`, or `SENIOR` expectations.
+
+At runtime, the same provider also reads the live session markdown notes to do two things:
+
+- generate the next interviewer question for the planned speaker
+- generate a conversational interviewer reply when the candidate asks a question during the interview
+
+This keeps both question generation and interviewer replies grounded in the same notes artifact rather than rebuilding context from raw JD/CV fields every turn.
+
+### `InterviewScoringSettings`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewScoringSettings.cs
+sealed record InterviewScoringSettings
+{
+  double BaseScore;
+  double EarlyStopThreshold;
+  int MinimumResponsesBeforeStop;
+  int KeywordHitPoints;
+  double KeywordHitMax;
+  int PositiveSignalPoints;
+  double PositiveSignalMax;
+  int NegativeSignalPenalty;
+  double NegativeSignalMax;
+  List<string> PositiveSignals;
+  List<string> NegativeSignals;
+  List<InterviewRoleSignalGroup> RoleSignals;
+  List<InterviewScoringDimensionDefinition> Dimensions;
+  List<InterviewSeniorityProfile> SeniorityProfiles;
+}
+```
+
+The primary scoring path is now fully LLM-first. `Dimensions` defines the evaluation breakdown requested from the model, including names, descriptions, and weights. The default rubric is intentionally broader than keyword matching: `communication`, `problem_solving`, `technical_judgment`, `ownership`, and `collaboration`. If the LLM output is unavailable or invalid, the fallback no longer evaluates transcript text heuristically; it returns a conservative non-evaluating result.
+
+### `InterviewSeniorityProfile`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewScoringSettings.cs
+sealed record InterviewSeniorityProfile
+{
+  string Level;
+  string Summary;
+  List<string> ExpectedBehaviors;
+  string ScoreGuidance;
+}
+```
+
+These profiles define how the evaluator should calibrate expectations for junior, mid, and senior candidates. The resolved `SeniorityLevel` is persisted in `HiringSessionResult`, added to generated notes and per-candidate artifacts, and reused by the screening scorer, interview question provider, and interview scorer so the workflow applies one consistent level assumption end to end.
+
+### `HiringFitAssessmentResult`
+
+```csharp
+// src/PMAgent.Application/Models/HiringFitAssessmentResult.cs
+sealed record HiringFitAssessmentResult(
+  double Score,
+  bool ShouldAdvance,
+  string Summary,
+  IReadOnlyCollection<string> Strengths,
+  IReadOnlyCollection<string> Gaps);
+```
+
+Returned by the HR screening scorer. Replaces the earlier keyword-match-only view with a semantic assessment summary plus explicit strengths and gaps.
+
+### `InterviewScoreDimension`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewScoreDimension.cs
+sealed record InterviewScoreDimension(
+  string Name,
+  double Score,
+  string Summary);
+```
+
+### `InterviewScoreResult`
+
+```csharp
+// src/PMAgent.Application/Models/InterviewScoreResult.cs
+sealed record InterviewScoreResult(
+  double Score,
+  bool ShouldStop,
+  string Rationale,
+  IReadOnlyCollection<InterviewScoreDimension>? Dimensions = null);
+```
+
+The interview scorer now returns both an overall score and an optional dimension breakdown used in notes, transcript summaries, and debugging.
 
 ---
 
@@ -285,9 +437,66 @@ Task<HiringSessionResult?> GetAsync(Guid sessionId, CancellationToken ct);
 Task<HiringSessionResult> ApproveScreeningAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken ct);
 Task<HiringSessionResult> ApproveInterviewScheduleAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken ct);
 Task<HiringSessionResult> SubmitCandidateResponseAsync(Guid sessionId, HiringCandidateResponseRequest request, CancellationToken ct);
+Task<HiringSessionResult> RequestHintAsync(Guid sessionId, CancellationToken ct);
 ```
 
-Implemented by `InMemoryHiringWorkflowService`. Coordinates the staged hiring process: HR screening, user approvals, interview turns, scoring, and note persistence.
+Implemented by `InMemoryHiringWorkflowService`. Coordinates the staged hiring process: HR screening, user approvals, interview turns, scoring, per-candidate folder creation, live Q&A file logging, notes-backed dynamic question generation, follow-up questions, clarification handling, and hint delivery.
+
+#### Per-candidate folder
+
+At session start, `InMemoryHiringWorkflowService` creates a folder `candidate-{sessionId}/` in the working directory and writes three files:
+
+| File | Contents |
+|---|---|
+| `jd-keywords.md` | Keywords extracted from the job description |
+| `cv-keywords.md` | Keywords extracted from the candidate CV |
+| `interview-qa.md` | Live Q&A log — appended in real-time as each question and answer is exchanged |
+
+The `CandidateFolder` field of `HiringSessionResult` gives the caller the full path to this folder.
+
+The service also stores the semantic HR screening summary, strengths, and gaps in session state so the approval and transcript flow can reference the model's assessment instead of only a numeric threshold.
+
+#### Follow-up questions
+
+Each `InterviewQuestion` may carry an optional `FollowUpText`. After the candidate answers a primary question, the service checks whether a follow-up should be asked before advancing to the next panel question. At most one follow-up is asked per question (`FollowUpAsked` flag). The follow-up text is surfaced in `HiringSessionResult.PendingFollowUp` and `FollowUpAvailable`.
+
+The live interview no longer depends on prebuilding a full question pack up front. Before each new interviewer turn, `InMemoryHiringWorkflowService` writes the current `hiring-session-{sessionId}.md` notes file and asks `ConfigurableInterviewQuestionProvider` to generate exactly one next question from that markdown file. This lets the provider reuse the JD, CV, transcript, HR notes, and prior evaluation context already written to disk instead of resending raw JD/CV payloads every time a new question is needed. Fallback templates still exist for resilience if the model output is invalid.
+
+#### Clarification handling
+
+If a candidate message ends with `?` or contains a clarification phrase, the service generates an interviewer reply using JD keywords and project brief context, and keeps the same question active without advancing.
+
+#### Hint delivery
+
+When `HiringCandidateResponseRequest.IsHintRequest = true`, or when `POST /api/hiring/sessions/{sessionId}/hint` is called, the service returns 2–3 hint keywords from `InterviewQuestion.HintKeywords` (or derived from JD keywords) without advancing the question.
+
+#### Scoring rubric
+
+The interview scoring system now uses a configurable rubric stored under `HiringWorkflow:Scoring` in `appsettings.json`, but the primary evaluation path is semantic LLM scoring.
+
+The rubric controls:
+
+- early-stop threshold
+- minimum number of responses before stopping
+- scoring dimensions requested from the LLM (`communication`, `problem_solving`, `technical_judgment`, `ownership`, `collaboration` by default)
+- prompt-level guidance supplied to the evaluator model, including explicit instructions not to reward keyword overlap on its own, to mirror the candidate-facing language when writing rationales, and to calibrate expectations by resolved seniority
+
+`LlmInterviewScoringAgent` asks the model to return a numeric score, stop/no-stop decision, rationale, and per-dimension breakdown. `RuleBasedInterviewScoringAgent` remains only as a conservative non-evaluating fallback when the LLM response is unavailable or malformed.
+
+### `IHiringFitScoringAgent`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IHiringFitScoringAgent.cs
+Task<HiringFitAssessmentResult> EvaluateAsync(
+  string projectBrief,
+  string jobDescription,
+  string candidateCv,
+  string targetSeniority,
+  string technicalInterviewRole,
+  CancellationToken cancellationToken = default);
+```
+
+Implemented by `LlmHiringFitScoringAgent`. Performs semantic CV/JD fit scoring during the HR screening gate and returns a decision, summary, strengths, and gaps.
 
 ### `IInterviewScoringAgent`
 
@@ -296,13 +505,34 @@ Implemented by `InMemoryHiringWorkflowService`. Coordinates the staged hiring pr
 Task<InterviewScoreResult> EvaluateAsync(
   string projectBrief,
   string jobDescription,
+  string targetSeniority,
   string technicalInterviewRole,
   IReadOnlyCollection<HiringTranscriptTurn> transcript,
   int candidateResponseCount,
-  CancellationToken ct);
+  CancellationToken cancellationToken = default);
 ```
 
-Implemented by `RuleBasedInterviewScoringAgent`. Produces a running interview score and decides whether the interview should stop early.
+Implemented by `LlmInterviewScoringAgent`, with `RuleBasedInterviewScoringAgent` as a conservative fallback. Produces a running interview score, dimension breakdown, and stop/no-stop decision using the configurable `HiringWorkflow:Scoring` rubric.
+
+### `IInterviewQuestionProvider`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IInterviewQuestionProvider.cs
+Task<IReadOnlyList<InterviewQuestion>> BuildQuestionsAsync(
+  HiringSessionStartRequest request,
+  string technicalInterviewRole,
+  CancellationToken cancellationToken = default);
+
+Task<InterviewQuestion> BuildQuestionFromNotesAsync(
+  HiringSessionStartRequest request,
+  string technicalInterviewRole,
+  string speaker,
+  int questionNumber,
+  string sessionNotesPath,
+  CancellationToken cancellationToken = default);
+```
+
+Implemented by `ConfigurableInterviewQuestionProvider`. `BuildQuestionsAsync` still supports generating a full staged pack when needed, while `BuildQuestionFromNotesAsync` is the runtime path used by the hiring workflow to generate the next interviewer question from the live markdown notes file for the session.
 
 ---
 
@@ -616,6 +846,18 @@ Returns the current hiring session state, approvals, transcript, score, and note
 
 Returns the generated markdown interview notes file when the session has already produced one. This is the endpoint used by the browser UI for notes export.
 
+### `POST /api/hiring/sessions/{sessionId}/hint`
+
+Requests hint keywords for the candidate's currently active interview question. The service returns 2–3 hint keywords without advancing the question. This is equivalent to submitting a `candidate-response` with `IsHintRequest = true`.
+
+### `POST /api/harness/run`
+
+Runs all registered harness scenarios and returns the full `HarnessReport` as JSON. The report is also written to `harness-reports/` on disk. No request body is required.
+
+### `POST /api/harness/run/{scenarioId}`
+
+Runs a single harness scenario by ID. Returns `HarnessScenarioResult` on `200 OK`, or `404 Not Found` if the scenario ID is unknown.
+
 ### Browser entrypoint `/`
 
 The root path serves the static browser client from `src/PMAgent.Api/wwwroot/`.
@@ -723,6 +965,8 @@ builder.Services.AddInfrastructure(builder.Configuration);
 ```csharp
 // src/PMAgent.Infrastructure/DependencyInjection.cs
 var healthChecks = services.AddHealthChecks();
+var hiringWorkflowSettings = configuration.GetSection("HiringWorkflow").Get<HiringWorkflowSettings>()
+  ?? HiringWorkflowSettings.CreateDefault();
 
 // ILlmClient — provider selected at startup from LlmSettings:Provider
 if (llmSettings.Provider == LlmProvider.Ollama)
@@ -735,8 +979,11 @@ else
 
 services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>(); // legacy endpoint
 services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>(); // baseline dynamic route rules
-services.AddSingleton<IInterviewScoringAgent, RuleBasedInterviewScoringAgent>();
-services.AddSingleton<IHiringWorkflowService, InMemoryHiringWorkflowService>();
+services.AddSingleton(hiringWorkflowSettings);
+services.AddScoped<IInterviewQuestionProvider, ConfigurableInterviewQuestionProvider>();
+services.AddScoped<IHiringFitScoringAgent, LlmHiringFitScoringAgent>();
+services.AddScoped<IInterviewScoringAgent, LlmInterviewScoringAgent>();
+services.AddScoped<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
 services.AddScoped<IAgentTool, ScopeAnalysisTool>();        // registered as IAgentTool
 services.AddScoped<IAgentTool, RiskAssessmentTool>();        // all resolved together
@@ -751,11 +998,109 @@ services.AddScoped<ISpecializedAgent, DeveloperAgent>();
 services.AddScoped<ISpecializedAgent, TesterAgent>();
 
 services.AddScoped<IOrchestratorAgent, OrchestratorAgent>();
+
+// Harness layer
+services.AddSingleton<IHarnessScenarioProvider, DefaultHarnessScenarioProvider>();
+services.AddScoped<IHarnessAssertionEngine, HarnessAssertionEngine>();
+services.AddScoped<IHarnessReportSink, JsonHarnessReportSink>();
+services.AddScoped<IHarnessReportSink, MarkdownHarnessReportSink>();
+services.AddScoped<IHarnessRunner, HarnessRunner>();
 ```
 
 Health check services are always registered because the API maps `/health` in every environment. The Ollama-specific probe is added only when `LlmSettings.Provider = Ollama`.
 
 `AgentExecutor` receives all `IAgentTool` registrations via constructor injection as `IEnumerable<IAgentTool>`. `OrchestratorAgent` uses the same pattern with `IEnumerable<ISpecializedAgent>`. Adding a new agent requires only one `AddScoped` line.
+
+The hiring workflow now also receives a singleton `HiringWorkflowSettings` object bound from configuration. This centralises fallback interview templates, semantic scoring dimensions, and HR screening thresholds in one place.
+
+---
+
+## Harness Layer
+
+The harness layer provides deterministic scenario-based validation of the agent system without requiring a real LLM. It is designed for fast CI runs and can be extended for nightly LLM-connected tests.
+
+### Interfaces (`PMAgent.Application/Abstractions/Harness/`)
+
+| Interface | Responsibility |
+|---|---|
+| `IHarnessScenarioProvider` | Returns the catalog of `HarnessScenario` definitions (`GetScenarios()`) |
+| `IHarnessRunner` | Drives the agent system through all or a single scenario (`RunAllAsync`, `RunScenarioAsync(scenarioId)`) |
+| `IHarnessAssertionEngine` | Evaluates a scenario's output against expected sections, decision, and confidence |
+| `IHarnessReportSink` | Persists a completed `HarnessReport` (multiple sinks can be registered) |
+
+### Models (`PMAgent.Application/Models/Harness/`)
+
+| Model | Key fields |
+|---|---|
+| `HarnessScenario` | `Id`, `ProjectBrief`, `ExpectedSections`, `ExpectedDecision`, `ExpectedMinConfidence`, `SimulateEmptyLlmResponse`, `SimulateLlmFault` |
+| `HarnessAssertion` | `Name`, `Status` (`Pass`/`Fail`/`Skipped`), `Message` |
+| `HarnessScenarioResult` | `ScenarioId`, `Passed`, `CorrelationId`, `RoleResults`, `Assertions`, `ErrorMessage`, `DurationMs` |
+| `HarnessReport` | `RunId`, `RunAt`, `Scenarios`, `PassRatePercent`, `TotalDurationMs` |
+
+### Infrastructure (`PMAgent.Infrastructure/Harness/`)
+
+| Class | Responsibility |
+|---|---|
+| `DefaultHarnessScenarioProvider` | 7 built-in scenarios (see below) |
+| `HarnessAssertionEngine` | Checks: output non-empty, all expected headings present (case-insensitive, `##`/`#`/`###` variants), valid decision, confidence in `[0.0 .. 1.0]` |
+| `HarnessRunner` | Drives `IOrchestratorAgent` per scenario; per-scenario `Stopwatch`; `CorrelationId` per run; fault-exception scenarios caught and marked Pass; writes to all registered `IHarnessReportSink`s |
+| `JsonHarnessReportSink` | Writes `harness-reports/harness-{runId}.json` |
+| `MarkdownHarnessReportSink` | Writes `harness-reports/harness-{runId}.md` with emoji status, role tables, and failed assertion list |
+
+### Built-in scenarios
+
+| Scenario ID | Input type | What it validates |
+|---|---|---|
+| `delivery-happy` | Normal project brief | Full delivery chain outputs all expected sections |
+| `delivery-ambiguous` | Vague/generic brief | Agent still produces decision and confidence |
+| `delivery-edge` | Minimal one-word brief | Graceful handling of minimal input |
+| `fault-empty-llm` | Normal brief + `SimulateEmptyLlmResponse = true` | Assertion engine catches missing output |
+| `fault-llm-exception` | Normal brief + `SimulateLlmFault = true` | Runner catches exception and passes the scenario |
+| `hiring-happy` | Hiring brief with matching CV | Hiring route produces full interview pack |
+| `hiring-below-threshold` | Hiring brief with low-fit CV | Low-fit CV produces rejection result |
+
+### Report files
+
+Reports are written to `harness-reports/` in the working directory:
+
+```
+harness-reports/
+├── harness-{runId}.json   → machine-readable, suitable for CI artifact upload
+└── harness-{runId}.md     → human-readable with emoji status and role summary tables
+```
+
+### Harness API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/harness/run` | Runs all scenarios and returns the `HarnessReport` |
+| `POST` | `/api/harness/run/{scenarioId}` | Runs a single scenario by ID and returns `HarnessScenarioResult`; `404` if unknown |
+
+### Fast hiring harness coverage
+
+In addition to orchestrator-level harness scenarios, `tests/PMAgent.Tests/HiringHarnessTests.cs` exercises the staged `IHiringWorkflowService` directly under `Category=Harness`. This fast suite covers:
+
+- Stage transitions from screening approval to interview start.
+- Full-panel interview completion and notes generation.
+- Follow-up question activation before advancing to the next role.
+- Hint delivery without advancing the active question.
+- Clarification replies that keep the same speaker/question active.
+- Early-stop behavior and persisted interview artifacts.
+
+---
+
+## CI Workflow
+
+The pipeline is defined in `.github/workflows/ci.yml` and has two jobs:
+
+| Job | Trigger | Filter | LLM needed | Fail condition |
+|---|---|---|---|---|
+| `fast` | Every push + every PR | `Category=Harness` | No | Any test failure |
+| `nightly` | Daily at 02:00 UTC + `workflow_dispatch` | `Category=HarnessLLM` | Yes (`OPENAI_API_KEY` secret) | Any test failure **or** `passRatePercent < 95` |
+
+Both jobs upload test results (`.trx`) and harness reports (`.json` + `.md`) as build artifacts.
+
+The nightly job reads `LlmSettings__Provider` and `LlmSettings__ApiKey` from GitHub Actions secrets via environment variables, so no secrets are stored in source code.
 
 ---
 
@@ -767,6 +1112,12 @@ dotnet run --project src/PMAgent.Api
 
 # Run all tests
 dotnet test PMAgent.slnx
+
+# Run only harness tests (no LLM required — fast CI mode)
+dotnet test --filter "Category=Harness"
+
+# Run LLM-connected harness tests locally (requires a key or Ollama)
+LlmSettings__Provider=OpenAI LlmSettings__ApiKey=sk-... dotnet test --filter "Category=HarnessLLM"
 ```
 
 ---
@@ -804,6 +1155,37 @@ dotnet test PMAgent.slnx
 | `HiringWorkflowTests` | `HiringInterview_ProgressesThroughPanelAndWritesNotes` | Interview runs by turn and writes notes to a document file |
 | `HiringWorkflowTests` | `CandidateResponses_LowScore_StopsInterviewEarly` | Low interview score stops the session early |
 | `HiringWorkflowTests` | `StartAsync_FitBelowThreshold_RejectsImmediately` | HR rejects low-fit CVs without forwarding them |
+| `HiringWorkflowTests` | `StartAsync_CreatesPerCandidateFolderWithKeywordFiles` | Session start creates per-candidate folder with JD/CV keyword files |
+| `HiringWorkflowTests` | `RequestHint_WhileInterviewActive_ReturnsHintAndSameQuestion` | Hint request returns keywords and keeps the current question active |
+| `HiringWorkflowTests` | `CandidateClarificationQuestion_ReceivesInterviewerReply_SameQuestion` | Clarification message triggers an interviewer reply without advancing the question |
+| `HiringWorkflowTests` | `HiringInterview_WritesLiveQaFileWithQuestionsAndAnswers` | Q&A file is appended in real-time during the interview |
+| `HiringWorkflowTests` | `StartAsync_ExplicitSeniority_IsReturnedInSession` | Explicit hiring seniority is preserved in the session result |
+| `InterviewSystemTests` | `BuildQuestions_UsesLlmForFullInterviewPack` | Question provider uses the LLM to generate the full staged interview pack, including technical, BA, and HR questions |
+| `InterviewSystemTests` | `BuildQuestionFromNotes_UsesLiveMarkdownNotes` | Runtime question generation reads the live markdown notes file rather than requiring raw JD/CV on each interviewer turn |
+| `InterviewSystemTests` | `BuildQuestions_AutoDetectsSeniorLevelFromContext` | Seniority can be inferred from hiring context when not set explicitly |
+| `InterviewSystemTests` | `RuleBasedScoring_FallsBackConservativelyWithoutTranscriptEvaluation` | Conservative fallback scoring no longer evaluates transcript text and instead returns a safe non-evaluating result |
+| `InterviewSystemTests` | `LlmHiringFitScoring_UsesSemanticFitAssessment` | HR screening uses semantic LLM fit scoring and returns strengths/gaps for the candidate |
+| `InterviewSystemTests` | `LlmInterviewScoring_ParsesDimensionBreakdown` | LLM interview scoring parses the per-dimension breakdown and overall score correctly |
+| `HarnessTests` | `RunAllAsync_HappyPath_AllScenariosProduceReport` | All 7 built-in scenarios execute and produce a report |
+| `HarnessTests` | `RunAllAsync_AllRolesOutputRealContent_PassRate100Percent` | Pass rate is 100% when all role outputs are non-empty |
+| `HarnessTests` | `RunScenarioAsync_DeliveryHappy_ReturnsPassedResult` | `delivery-happy` scenario passes all assertions |
+| `HarnessTests` | `RunScenarioAsync_FaultEmptyLlm_OutputNotEmptyAssertionFails` | Empty LLM output causes the `output non-empty` assertion to fail |
+| `HarnessTests` | `RunScenarioAsync_FaultLlmException_ScenarioPasses` | An LLM exception scenario is caught and marked as passed |
+| `HarnessTests` | `RunScenarioAsync_UnknownId_Throws` | Unknown scenario ID throws `ArgumentException` |
+| `HarnessTests` | `HarnessAssertionEngine_MissingSection_ReportsFailure` | Missing expected heading is captured as a `Fail` assertion |
+| `HarnessTests` | `HarnessAssertionEngine_InvalidDecision_ReportsFailure` | Invalid decision value is captured as a `Fail` assertion |
+| `HarnessTests` | `HarnessAssertionEngine_ConfidenceOutOfRange_ReportsFailure` | Out-of-range confidence is captured as a `Fail` assertion |
+| `HarnessTests` | `RunAllAsync_ReportContainsCorrelationIdsForAllScenarios` | Every scenario result in the report has a non-empty correlation ID |
+| `HarnessTests` | `DefaultScenarioProvider_HasAtLeast7Scenarios` | Built-in provider exposes at least 7 scenarios |
+| `HiringHarnessTests` | `FullPanelFlow_TransitionsStagesAndWritesArtifacts` | Hiring workflow moves through approval and interview stages, then writes notes and candidate-folder artifacts |
+| `HiringHarnessTests` | `FollowUpFlow_ExposesPendingFollowUpBeforeAdvancing` | The workflow exposes a pending follow-up before the interviewer advances to the next role |
+| `HiringHarnessTests` | `HintFlow_LeavesQuestionActive_AndWritesHintToQaLog` | Hint requests keep the same question active and append hint output to `interview-qa.md` |
+| `HiringHarnessTests` | `ClarificationFlow_RepliesWithoutAdvancingQuestion` | Clarification replies keep the same interviewer/question active |
+| `HiringHarnessTests` | `EarlyStopFlow_StopsInterviewAndWritesNotes` | Low-scoring answers trigger early-stop and still persist closing notes |
+| `HarnessLlmTests` | `RunAllAsync_WithRealLlm_PassRateIsAtLeast95Percent` | Full run with real LLM achieves ≥ 95% pass rate (skipped without key) |
+| `HarnessLlmTests` | `RunScenarioAsync_DeliveryHappy_WithRealLlm_Passes` | `delivery-happy` passes with a real LLM response (skipped without key) |
+| `HarnessLlmTests` | `RunScenarioAsync_HiringHappy_WithRealLlm_Passes` | `hiring-happy` passes with a real LLM response (skipped without key) |
+| `HarnessLlmTests` | `RunAllAsync_WithRealLlm_ReportWrittenToDisk` | JSON and Markdown report files are created on disk after a real run (skipped without key) |
 | `RoutingPolicyTests` | `BuildInitialRoute_PlanningIntent_ReturnsPoPmBa` | Planning intent uses PO → PM → BA route |
 | `RoutingPolicyTests` | `BuildInitialRoute_BuildIntent_ReturnsPoBaDevTest` | Build intent uses PO → BA → DEV → TEST route |
 | `RoutingPolicyTests` | `BuildInitialRoute_HiringWorkflow_ReturnsPmHrBa` | Hiring workflow uses PM → HR → BA route |

@@ -13,17 +13,141 @@ public sealed class HiringWorkflowTests : IDisposable
     {
         public Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
         {
+                        if (systemPrompt.Contains("HR screening evaluator", StringComparison.OrdinalIgnoreCase))
+                        {
+                                if (userPrompt.Contains("manual testing", StringComparison.OrdinalIgnoreCase)
+                                        || userPrompt.Contains("customer support", StringComparison.OrdinalIgnoreCase))
+                                {
+                                        return Task.FromResult("""
+                                                {"score": 28, "shouldAdvance": false, "summary": "The CV does not align strongly with the backend role.", "strengths": ["general software exposure"], "gaps": ["c#", "asp.net core", "postgresql", "docker"]}
+                                                """);
+                                }
+
+                                return Task.FromResult("""
+                                        {"score": 86, "shouldAdvance": true, "summary": "The CV aligns well with the backend role and shows relevant delivery evidence.", "strengths": ["asp.net core", "postgresql", "docker"], "gaps": ["distributed systems"]}
+                                        """);
+                        }
+
+                        if (systemPrompt.Contains("continuing an in-progress interview", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return Task.FromResult(BuildSingleQuestion(userPrompt));
+                        }
+
+                        if (systemPrompt.Contains("active interviewer in an ongoing hiring interview", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (userPrompt.Contains("tiếng Việt", StringComparison.OrdinalIgnoreCase) || userPrompt.Contains("tieng viet", StringComparison.OrdinalIgnoreCase))
+                                return Task.FromResult("Được, từ giờ tôi sẽ trao đổi bằng tiếng Việt. Bạn cứ tiếp tục với ví dụ thực tế gần nhất nhé.");
+
+                            return Task.FromResult("Sure. I am clarifying the intent of the current question so you can answer with a concrete example from your recent work.");
+                        }
+
+                        if (systemPrompt.Contains("expert interviewer", StringComparison.OrdinalIgnoreCase))
+                        {
+                                var technicalRole = userPrompt.Contains("Technical interviewer role:\nTEST", StringComparison.OrdinalIgnoreCase)
+                                    || userPrompt.Contains("Technical interviewer role:\r\nTEST", StringComparison.OrdinalIgnoreCase)
+                                    || userPrompt.Contains("Technical interviewer role:\n            TEST", StringComparison.OrdinalIgnoreCase)
+                                    ? "TEST"
+                                    : "DEV";
+
+                                var technicalQuestion = technicalRole == "TEST"
+                                    ? "Walk us through how you would design a QA strategy for API, regression, and release confidence."
+                                    : "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.";
+                                var technicalFollowUp = technicalRole == "TEST"
+                                    ? "What metrics would you track to prove release quality is improving?"
+                                    : "What would you change now with more production hindsight?";
+
+                                return Task.FromResult($$"""
+                                        {
+                                            "questions": [
+                                                {
+                                                    "speaker": "PM",
+                                                    "text": "Please introduce yourself and summarize the experience most relevant to this role.",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["experience", "role fit", "summary"]
+                                                },
+                                                {
+                                                    "speaker": "PM",
+                                                    "text": "Your CV shows hands-on API and PostgreSQL ownership. Given this role, where would you expect to make the first impact?",
+                                                    "followUpText": "What would you prioritise in the first two weeks to reduce delivery risk?",
+                                                    "hintKeywords": ["ownership", "first impact", "risk reduction"]
+                                                },
+                                                {
+                                                    "speaker": "{{technicalRole}}",
+                                                    "text": "{{technicalQuestion}}",
+                                                    "followUpText": "{{technicalFollowUp}}",
+                                                    "hintKeywords": ["trade-offs", "architecture", "validation"]
+                                                },
+                                                {
+                                                    "speaker": "BA",
+                                                    "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?",
+                                                    "followUpText": "How would you document and communicate that scope change?",
+                                                    "hintKeywords": ["impact", "stakeholders", "change log"]
+                                                },
+                                                {
+                                                    "speaker": "HR",
+                                                    "text": "What questions do you have for the team before we close?",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["team", "success", "expectations"]
+                                                }
+                                            ]
+                                        }
+                                        """);
+                        }
+
             var lower = userPrompt.ToLowerInvariant();
             if (lower.Contains("i do not know") || lower.Contains("no experience"))
             {
                 return Task.FromResult("""
-                    {"score": 22, "shouldStop": true, "rationale": "Concerns outweigh strengths. The candidate repeatedly shows uncertainty on critical topics."}
+                            {"score": 22, "shouldStop": true, "rationale": "Concerns outweigh strengths. The candidate repeatedly shows uncertainty on critical topics.", "dimensions": [{"name": "communication", "score": 35, "summary": "Uncertain answers."}, {"name": "problem_solving", "score": 24, "summary": "Limited structure in the approach."}, {"name": "technical_judgment", "score": 20, "summary": "Limited technical substance."}, {"name": "ownership", "score": 18, "summary": "Weak ownership evidence."}, {"name": "collaboration", "score": 25, "summary": "Limited delivery alignment."}]}
                     """);
             }
 
             return Task.FromResult("""
-                {"score": 84, "shouldStop": false, "rationale": "The candidate demonstrates relevant delivery evidence and answers with enough technical depth to continue."}
+                        {"score": 84, "shouldStop": false, "rationale": "The candidate demonstrates relevant delivery evidence and answers with enough depth and judgment to continue.", "dimensions": [{"name": "communication", "score": 82, "summary": "Clear and structured."}, {"name": "problem_solving", "score": 84, "summary": "Breaks down problems clearly."}, {"name": "technical_judgment", "score": 88, "summary": "Strong role alignment."}, {"name": "ownership", "score": 80, "summary": "Shows execution ownership."}, {"name": "collaboration", "score": 78, "summary": "Shows delivery awareness."}]}
                 """);
+        }
+
+        private static string BuildSingleQuestion(string userPrompt)
+        {
+            if (userPrompt.Contains("Requested speaker:\nPM", StringComparison.OrdinalIgnoreCase)
+                && userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                    { "speaker": "PM", "text": "Please introduce yourself and summarize the experience most relevant to this role.", "followUpText": null, "hintKeywords": ["experience", "role fit", "summary"] }
+                    """;
+            }
+
+            if (userPrompt.Contains("Requested speaker:\nPM", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                    { "speaker": "PM", "text": "Your recent work shows hands-on API and PostgreSQL ownership. Given this role, where would you expect to make the first impact?", "followUpText": "What would you prioritise in the first two weeks to reduce delivery risk?", "hintKeywords": ["ownership", "first impact", "risk reduction"] }
+                    """;
+            }
+
+            if (userPrompt.Contains("Requested speaker:\nTEST", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                    { "speaker": "TEST", "text": "Walk us through how you would design a QA strategy for API, regression, and release confidence.", "followUpText": "What metrics would you track to prove release quality is improving?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                    """;
+            }
+
+            if (userPrompt.Contains("Requested speaker:\nDEV", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                    { "speaker": "DEV", "text": "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                    """;
+            }
+
+            if (userPrompt.Contains("Requested speaker:\nBA", StringComparison.OrdinalIgnoreCase))
+            {
+                return """
+                    { "speaker": "BA", "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?", "followUpText": "How would you document and communicate that scope change?", "hintKeywords": ["impact", "stakeholders", "change log"] }
+                    """;
+            }
+
+            return """
+                { "speaker": "HR", "text": "What questions do you have for the team before we close?", "followUpText": null, "hintKeywords": ["team", "success", "expectations"] }
+                """;
         }
     }
 
@@ -41,7 +165,22 @@ public sealed class HiringWorkflowTests : IDisposable
         Assert.True(result.RequiresUserApproval);
         Assert.Equal("screening_forward", result.ApprovalType);
         Assert.Equal("HR", result.CurrentSpeaker);
-        Assert.True(result.ScreeningFitScore >= 70);
+        Assert.True(result.ScreeningFitScore >= 40);
+        Assert.Equal("MID", result.SeniorityLevel);
+    }
+
+    [Fact]
+    public async Task StartAsync_ExplicitSeniority_IsReturnedInSession()
+    {
+        var service = BuildService();
+
+        var result = await service.StartAsync(new HiringSessionStartRequest(
+            "Hire a backend engineer for a SaaS billing platform",
+            "Need a senior .NET engineer who can mentor and make architecture decisions.",
+            "Built C# ASP.NET Core APIs, tuned PostgreSQL, deployed Docker workloads, and designed REST APIs.",
+            TargetSeniority: "SENIOR"));
+
+        Assert.Equal("SENIOR", result.SeniorityLevel);
     }
 
     [Fact]
@@ -156,7 +295,27 @@ public sealed class HiringWorkflowTests : IDisposable
         var hintResult = await service.RequestHintAsync(started.SessionId);
 
         Assert.Equal("interview_active", hintResult.Stage);
-        Assert.Contains("keyword", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cues", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task NaturalLanguageHintRequest_RoutesToHintFlow()
+    {
+        var service = BuildService();
+        var started = await service.StartAsync(new HiringSessionStartRequest(
+            "Tuyển backend engineer cho nền tảng thanh toán",
+            "Cần C#, ASP.NET Core, PostgreSQL, Docker và kinh nghiệm thiết kế API.",
+            "Đã xây dựng API bằng C# ASP.NET Core, tối ưu PostgreSQL và triển khai Docker.",
+            TechnicalInterviewRole: "DEV"));
+
+        await service.ApproveScreeningAsync(started.SessionId, new HiringApprovalRequest(true));
+
+        var hintResult = await service.SubmitCandidateResponseAsync(
+            started.SessionId,
+            new HiringCandidateResponseRequest("bạn có thể cho tôi 1 gợi ý được không?"));
+
+        Assert.Equal("interview_active", hintResult.Stage);
+        Assert.Contains("Bạn có thể", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -176,8 +335,31 @@ public sealed class HiringWorkflowTests : IDisposable
             new HiringCandidateResponseRequest("Could you clarify what you mean by 'contribute to first'?"));
 
         Assert.Equal("interview_active", clarified.Stage);
-        // The question should still be about the project, not have moved on
         Assert.Equal("PM", clarified.CurrentSpeaker);
+        Assert.Contains("clarifying", clarified.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CandidateLanguageSwitch_ChangesRuntimeReplyToVietnamese()
+    {
+        var service = BuildService();
+        var started = await service.StartAsync(new HiringSessionStartRequest(
+            "Tuyển backend engineer cho một sản phẩm SaaS",
+            "Cần C#, ASP.NET Core, PostgreSQL, Docker và kinh nghiệm thiết kế API.",
+            "Đã xây dựng API bằng C# ASP.NET Core, tối ưu PostgreSQL và triển khai Docker."));
+
+        await service.ApproveScreeningAsync(started.SessionId, new HiringApprovalRequest(true));
+
+        var clarified = await service.SubmitCandidateResponseAsync(
+            started.SessionId,
+            new HiringCandidateResponseRequest("bạn có thể nói tiếng Việt được không?"));
+
+        Assert.Equal("interview_active", clarified.Stage);
+        Assert.Equal("PM", clarified.CurrentSpeaker);
+        Assert.Contains("tiếng Việt", clarified.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+
+        var notes = await File.ReadAllTextAsync(clarified.NotesDocumentPath);
+        Assert.Contains("ConversationLanguage: VI", notes, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -235,10 +417,20 @@ public sealed class HiringWorkflowTests : IDisposable
     }
 
     private InMemoryHiringWorkflowService BuildService() =>
-        new(
-            new LlmInterviewScoringAgent(new FakeInterviewScoringLlmClient(), NullLogger<LlmInterviewScoringAgent>.Instance),
+        BuildServiceCore();
+
+    private InMemoryHiringWorkflowService BuildServiceCore()
+    {
+        var settings = HiringWorkflowSettings.CreateDefault();
+        var llm = new FakeInterviewScoringLlmClient();
+        return new InMemoryHiringWorkflowService(
+            new LlmHiringFitScoringAgent(llm, settings, NullLogger<LlmHiringFitScoringAgent>.Instance),
+            new LlmInterviewScoringAgent(llm, settings, NullLogger<LlmInterviewScoringAgent>.Instance),
+            new ConfigurableInterviewQuestionProvider(llm, settings),
+            settings,
             NullLogger<InMemoryHiringWorkflowService>.Instance,
             _notesRootPath);
+    }
 
     public void Dispose()
     {

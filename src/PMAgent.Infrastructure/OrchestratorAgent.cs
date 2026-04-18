@@ -157,10 +157,10 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
             {request.CandidateCv}
 
             Required workflow:
-            1. Read the CV and extract relevant keywords.
-            2. Check candidate fit against the job description.
+            1. Read the CV and extract broad evidence plus supporting keywords as initial context only.
+            2. Check candidate fit against the job description using overall role alignment, not keyword overlap alone.
             3. Plan and execute the interview process.
-            4. If DEV or TEST is requested, generate technical interview questions and scorecards for that role.
+            4. If DEV or TEST is requested, generate interview questions and scorecards that evaluate the candidate holistically in that role.
             """;
 
         return string.IsNullOrWhiteSpace(request.Context)

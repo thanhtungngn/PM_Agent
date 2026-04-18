@@ -10,6 +10,7 @@ public sealed record HiringSessionResult(
     string CurrentSpeaker,
     string CurrentPrompt,
     string StatusSummary,
+    string SeniorityLevel,
     string TechnicalInterviewRole,
     string NotesDocumentPath,
     IReadOnlyCollection<string> Participants,

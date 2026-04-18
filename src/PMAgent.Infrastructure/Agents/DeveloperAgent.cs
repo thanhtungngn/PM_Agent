@@ -29,6 +29,10 @@ public sealed class DeveloperAgent : SpecializedAgentBase
         - ### Hands-on Exercise
         - ### Evaluation Scorecard
         - ### Red Flags
+        For hiring output, focus on evaluating the candidate as a software engineer, not on checking isolated keywords or trivia.
+        The interview pack should probe real decisions, debugging approach, trade-offs, collaboration, ownership, and learning from past work.
+        Use the candidate CV and JD only to anchor realistic scenarios.
+        Match the dominant language used in the hiring context when generating candidate-facing content.
         Align your tech choices with any requirements from BA output if available in context.
         Use markdown tables and code blocks where appropriate.
         """;

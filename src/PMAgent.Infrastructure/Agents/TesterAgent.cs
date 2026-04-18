@@ -29,6 +29,10 @@ public sealed class TesterAgent : SpecializedAgentBase
         - ### Automation and Quality Gates Discussion Points
         - ### Evaluation Scorecard
         - ### Red Flags
+        For hiring output, focus on evaluating the candidate as a QA engineer, not on checking isolated keywords or tool trivia.
+        The interview pack should probe risk judgment, test design reasoning, collaboration, prioritisation, ownership, and learning from real delivery situations.
+        Use the candidate CV and JD only to anchor realistic scenarios.
+        Match the dominant language used in the hiring context when generating candidate-facing content.
         Align quality gates with the tech stack mentioned in previous context if available.
         """;
 }

@@ -9,6 +9,7 @@ namespace PMAgent.Api.Controllers;
 public sealed class HiringWorkflowController(IHiringWorkflowService hiringWorkflowService) : ControllerBase
 {
     private static readonly string[] SupportedTechnicalRoles = ["DEV", "TEST"];
+    private static readonly string[] SupportedSeniorityLevels = ["AUTO", "JUNIOR", "MID", "SENIOR"];
 
     [HttpPost]
     [ProducesResponseType(typeof(HiringSessionResult), StatusCodes.Status200OK)]
@@ -30,6 +31,12 @@ public sealed class HiringWorkflowController(IHiringWorkflowService hiringWorkfl
             && !SupportedTechnicalRoles.Contains(request.TechnicalInterviewRole, StringComparer.OrdinalIgnoreCase))
         {
             return BadRequest("TechnicalInterviewRole must be DEV or TEST.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.TargetSeniority)
+            && !SupportedSeniorityLevels.Contains(request.TargetSeniority, StringComparer.OrdinalIgnoreCase))
+        {
+            return BadRequest("TargetSeniority must be AUTO, JUNIOR, MID, or SENIOR.");
         }
 
         var result = await hiringWorkflowService.StartAsync(request, cancellationToken);

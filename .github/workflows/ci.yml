@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  schedule:
+    - cron: "0 2 * * *"   # 02:00 UTC every day — triggers the nightly job
+  workflow_dispatch: {}
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # fast: harness tests only — no LLM key required
+  # Runs on every push and every PR. Must pass before merge.
+  # ─────────────────────────────────────────────────────────
+  fast:
+    name: Fast (Harness — no LLM)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Restore
+        run: dotnet restore PMAgent.slnx
+
+      - name: Build
+        run: dotnet build PMAgent.slnx --no-restore --configuration Release
+
+      - name: Run harness tests
+        run: >
+          dotnet test PMAgent.slnx
+          --no-build
+          --configuration Release
+          --filter "Category=Harness"
+          --logger "trx;LogFileName=harness-fast.trx"
+          --results-directory test-results/
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-fast
+          path: test-results/
+
+      - name: Upload harness reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-reports-fast
+          path: harness-reports/
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────────────────
+  # nightly: LLM-connected harness tests
+  # Runs on a schedule and can be triggered manually.
+  # Requires OPENAI_API_KEY to be set as a repository secret.
+  # ─────────────────────────────────────────────────────────
+  nightly:
+    name: Nightly (HarnessLLM — real LLM)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Restore
+        run: dotnet restore PMAgent.slnx
+
+      - name: Build
+        run: dotnet build PMAgent.slnx --no-restore --configuration Release
+
+      - name: Run LLM harness tests
+        env:
+          LlmSettings__Provider: OpenAI
+          LlmSettings__ApiKey: ${{ secrets.OPENAI_API_KEY }}
+          LlmSettings__Model: gpt-4o
+        run: >
+          dotnet test PMAgent.slnx
+          --no-build
+          --configuration Release
+          --filter "Category=HarnessLLM"
+          --logger "trx;LogFileName=harness-nightly.trx"
+          --results-directory test-results/
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-nightly
+          path: test-results/
+
+      - name: Upload harness reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-reports-nightly
+          path: harness-reports/
+          if-no-files-found: ignore
+
+      - name: Check pass rate threshold
+        run: |
+          REPORT=$(ls harness-reports/harness-*.json 2>/dev/null | tail -1 || true)
+          if [ -z "$REPORT" ]; then
+            echo "No harness report found — skipping threshold check."
+            exit 0
+          fi
+          PASS_RATE=$(jq '.passRatePercent' "$REPORT")
+          echo "Pass rate: ${PASS_RATE}%"
+          THRESHOLD=95
+          if (( $(echo "$PASS_RATE < $THRESHOLD" | bc -l) )); then
+            echo "::error::Harness pass rate ${PASS_RATE}% is below the required ${THRESHOLD}% threshold."
+            exit 1
+          fi
+          echo "Pass rate ${PASS_RATE}% meets the ${THRESHOLD}% threshold."

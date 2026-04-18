@@ -56,7 +56,9 @@ In practice, a planning run looks like this:
 - **Action planning** — produces a milestone-based plan with owners and review cadence.
 - **Transparent reasoning** — every step the agent takes is visible in the response, so stakeholders can audit or challenge the plan.
 - **Configurable depth** — the `maxIterations` setting controls how many reasoning steps the agent is allowed to take, giving you a cost/quality trade-off knob.
-- **Staged hiring workflow** — supports HR-only screening first, explicit user approvals, role-based interview turns, interview scoring, and persisted HR notes.
+- **Staged hiring workflow** — supports HR-only screening first, explicit user approvals, role-based interview turns, interview scoring, per-candidate file folder, live Q&A logging, structured follow-up questions, clarification replies, candidate hints, and persisted HR notes.
+- **LLM-first interview system** — the hiring flow now asks the LLM to read the project brief, JD, and CV to start the session, then reuses the live markdown interview notes to generate each next question during the session. Keywords are treated only as weak initial context; the interview and scoring focus on how the candidate reasons, communicates, collaborates, and owns decisions. Candidate-facing prompts and evaluation notes also mirror the dominant language of the interview context when possible.
+- **Quality harness** — a built-in scenario runner that validates all agent roles without requiring a live LLM. Produces JSON and Markdown reports in `harness-reports/` and is designed for use in CI pipelines. Trigger a run at any time via `POST /api/harness/run` or from the GitHub Actions CI workflow.
 
 ### Orchestrator — Full Team Simulation
 
@@ -128,6 +130,7 @@ Send a `POST` request to `/api/orchestrator/run` with the following fields:
 | `workflow` | Orchestration mode: `delivery` or `hiring` | `"hiring"` |
 | `jobDescription` | Required when `workflow = hiring`; the JD used for screening | `"Senior backend engineer with .NET and PostgreSQL"` |
 | `candidateCv` | Required when `workflow = hiring`; extracted CV text | `"5 years in ASP.NET Core, SQL, Docker..."` |
+| `targetSeniority` | Optional in hiring mode; expected candidate level for question and score calibration | `"SENIOR"` |
 | `technicalInterviewRoles` | Optional in hiring mode; which technical interview packs to generate | `["DEV", "TEST"]` |
 
 **Example request:**
@@ -143,7 +146,7 @@ Send a `POST` request to `/api/orchestrator/run` with the following fields:
 
 ### Hiring workflow orchestration
 
-Use hiring mode when you want the orchestrator to read a CV, compare it with a JD, and prepare an interview process.
+Use hiring mode when you want the orchestrator to read a CV, evaluate its semantic fit against a JD, and prepare an interview process.
 
 In hiring mode, the orchestrator starts with `PM -> HR -> BA` and then appends `DEV` and/or `TEST` when technical interview packs are requested.
 
@@ -157,6 +160,7 @@ In hiring mode, the orchestrator starts with `PM -> HR -> BA` and then appends `
   "workflow": "hiring",
   "jobDescription": "Need strong C#, ASP.NET Core, PostgreSQL, API design, test automation, and CI/CD experience.",
   "candidateCv": "Candidate has 5 years in .NET, REST APIs, PostgreSQL tuning, Playwright, xUnit, and Azure DevOps.",
+  "targetSeniority": "SENIOR",
   "technicalInterviewRoles": ["DEV", "TEST"]
 }
 ```
@@ -169,16 +173,20 @@ Use the dedicated hiring session API when you want the process to follow an appr
 
 The staged process is:
 
-1. HR screens the CV first.
-2. If fit is above 70%, HR asks the user whether the CV may be forwarded to PM, BA, and one technical interviewer.
+1. HR screens the CV first using an LLM-based semantic fit assessment.
+2. If fit is above 40%, HR asks the user whether the CV may be forwarded to PM, BA, and one technical interviewer.
 3. PM prepares the interview schedule and can wait for approval, or proceed immediately when auto-approval is enabled.
 4. The interview starts with role introductions, then the candidate introduces themselves.
-5. PM covers project context and PM questions.
-6. DEV or TEST covers technical questions.
-7. BA covers scenario and behavior questions.
-8. HR records notes throughout the interview.
-9. A scoring agent updates the interview score and can end the session early when the score is too low.
-10. The panel closes with Q/A and HR writes the interview notes to a document file.
+5. The system resolves a seniority target (`JUNIOR`, `MID`, or `SENIOR`) from the request or the hiring materials so expectations stay consistent across the interview.
+7. PM covers project context and PM questions. After the session starts, each next interviewer question is generated from the live markdown notes for that session, so the system can reuse prior transcript context instead of resending the raw JD and CV on every turn. After each primary answer a follow-up question may be asked before the next role takes over.
+8. DEV or TEST covers technical questions with the same follow-up flow.
+9. BA covers scenario and behavior questions.
+10. If the candidate is stuck they may request a hint — the interviewer provides 2–3 short prompts without revealing the full answer.
+11. If the candidate asks a clarification question mid-interview, the interviewer replies and the same question remains active.
+12. HR records notes throughout the interview.
+13. A scoring agent updates the interview score using semantic LLM evaluation plus a configurable dimension rubric, and can end the session early when the score is too low. The score is based on demonstrated reasoning and role fit rather than keyword overlap, and is calibrated differently for junior, mid, and senior expectations. If semantic evaluation is unavailable, the system falls back conservatively instead of scoring the transcript with text heuristics.
+14. The panel closes with Q/A and HR writes the interview notes to a document file.
+15. A per-candidate folder (`candidate-{sessionId}/`) is created at session start with extracted JD keywords, CV keywords, and a live Q&A log that is updated in real-time throughout the interview.
 
 This staged flow is exposed under `/api/hiring/sessions`.
 
@@ -259,8 +267,20 @@ This design has two business benefits:
 | **OrchestrationResult** | The aggregated output from all specialized agents plus a cross-role summary |
 | **Workflow** | The orchestrator mode. `delivery` is for project planning; `hiring` is for CV screening, JD fit, and interview preparation |
 | **JobDescription** | The target job requirements used in hiring mode |
-| **CandidateCv** | Extracted CV text used for keyword extraction and fit analysis in hiring mode |
+| **CandidateCv** | Extracted CV text used for semantic fit analysis and interview preparation in hiring mode |
+| **TargetSeniority** | Optional hiring input that sets the expected level directly (`AUTO`, `JUNIOR`, `MID`, `SENIOR`) |
 | **TechnicalInterviewRoles** | Optional list of technical interview packs to generate in hiring mode (`DEV`, `TEST`) |
 | **Hiring Session** | A stateful interview workflow with approvals, transcript turns, score updates, and HR notes |
-| **Screening Fit Score** | The HR gate score used to decide whether the CV should move beyond initial screening |
+| **SeniorityLevel** | The resolved hiring level used to calibrate screening, questions, and evaluation throughout the session |
+| **Screening Fit Score** | The HR gate score produced by semantic LLM assessment to decide whether the CV should move beyond initial screening |
 | **Interview Score** | The running score maintained during the interview to decide whether the process should continue |
+| **Follow-up Question** | A secondary question asked after the candidate answers a primary interview question, before advancing to the next panel member |
+| **Clarification Reply** | The interviewer's response when the candidate asks a question mid-interview; keeps the current question active |
+| **Hint** | 2–3 keyword prompts provided to a candidate who is stuck on a question, without revealing the full answer |
+| **Candidate Folder** | A per-session directory (`candidate-{sessionId}/`) created at session start that holds JD keywords, CV keywords, and the live Q&A log |
+| **Question Pack** | The staged interview set generated primarily by the LLM for PM, technical, BA, and HR interview turns, with each next question derived from the live session notes during runtime |
+| **Scoring Rubric** | The configurable interview scoring model that defines thresholds and broad evaluation dimensions for semantic LLM evaluation rather than direct keyword matching |
+| **Harness** | A built-in scenario runner that validates agent outputs deterministically without a live LLM |
+| **HarnessScenario** | A named test case that defines the input brief, expected output sections, decision, and optionally fault-injection flags |
+| **HarnessReport** | The aggregated result of a harness run, including pass rate, per-scenario results, and timing; written to `harness-reports/` as JSON and Markdown |
+| **PassRate** | The percentage of harness scenarios that passed; the CI threshold is ≥ 95% |
