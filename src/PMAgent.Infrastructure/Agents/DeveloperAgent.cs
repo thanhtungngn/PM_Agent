@@ -22,6 +22,13 @@ public sealed class DeveloperAgent : SpecializedAgentBase
         - ### API Design (principles: versioning, error format, documentation)
         - ### Implementation Approach (numbered steps)
         - ### Key Technical Decisions (bullet list with rationale)
+        If the context includes a hiring workflow and DEV is requested for interview support, produce a developer interview pack instead that includes:
+        - ### Technical Interview Objectives
+        - ### Topic Matrix (area, depth, signal to look for)
+        - ### Technical Interview Questions (at least 8)
+        - ### Hands-on Exercise
+        - ### Evaluation Scorecard
+        - ### Red Flags
         Align your tech choices with any requirements from BA output if available in context.
         Use markdown tables and code blocks where appropriate.
         """;

@@ -6,14 +6,14 @@ using System.Diagnostics;
 namespace PMAgent.Infrastructure;
 
 /// <summary>
-/// Coordinates the five specialized agents (PO → PM → BA → DEV → TEST) in sequence,
+/// Coordinates specialized agents (PO → PM → HR → BA → DEV → TEST) in sequence,
 /// forwarding accumulated context to each subsequent agent and aggregating all outputs
 /// into a single <see cref="OrchestrationResult"/>.
 /// </summary>
 public sealed class OrchestratorAgent : IOrchestratorAgent
 {
-    // Ordered dispatch sequence: PO → PM → BA → DEV → TEST
-    private static readonly string[] AgentOrder = ["PO", "PM", "BA", "DEV", "TEST"];
+    // Ordered full-chain sequence: PO → PM → HR → BA → DEV → TEST
+    private static readonly string[] AgentOrder = ["PO", "PM", "HR", "BA", "DEV", "TEST"];
 
     private readonly IReadOnlyDictionary<string, ISpecializedAgent> _agents;
     private readonly IAgentRoutingPolicy _routingPolicy;
@@ -40,7 +40,7 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
         var totalSw = Stopwatch.StartNew();
 
         var results = new List<AgentTaskResult>();
-        var accumulatedContext = request.Context;
+        var accumulatedContext = BuildInitialContext(request);
         var executedRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pendingRoles = new Queue<string>(_routingPolicy.BuildInitialRoute(request));
 
@@ -134,5 +134,37 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
             if (!executedRoles.Contains(role) && !pendingRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
                 pendingRoles.Enqueue(role);
         }
+    }
+
+    private static string BuildInitialContext(OrchestrationRequest request)
+    {
+        if (!string.Equals(request.Workflow, "hiring", StringComparison.OrdinalIgnoreCase))
+            return request.Context;
+
+        var technicalRoles = request.TechnicalInterviewRoles is null || request.TechnicalInterviewRoles.Count == 0
+            ? "None requested"
+            : string.Join(", ", request.TechnicalInterviewRoles);
+
+        var hiringContext = $"""
+            [Hiring Workflow Context]
+            Workflow: hiring
+            Requested technical interview roles: {technicalRoles}
+
+            Job Description:
+            {request.JobDescription}
+
+            Candidate CV:
+            {request.CandidateCv}
+
+            Required workflow:
+            1. Read the CV and extract relevant keywords.
+            2. Check candidate fit against the job description.
+            3. Plan and execute the interview process.
+            4. If DEV or TEST is requested, generate technical interview questions and scorecards for that role.
+            """;
+
+        return string.IsNullOrWhiteSpace(request.Context)
+            ? hiringContext
+            : $"{request.Context}\n\n{hiringContext}";
     }
 }

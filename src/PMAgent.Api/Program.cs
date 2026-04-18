@@ -21,11 +21,14 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
     options.SwaggerEndpoint("/swagger/v1/swagger.json", "PM Agent v1");
-    options.RoutePrefix = string.Empty; // Swagger UI at root: http://localhost:<port>/
+    options.RoutePrefix = "swagger";
 });
 
 app.UseHttpsRedirection();

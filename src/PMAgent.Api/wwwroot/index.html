@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PM Agent Chat</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div>
+                <p class="eyebrow">PM Agent</p>
+                <h1>Chat Console</h1>
+                <p class="lead">A lightweight UI to interact with the orchestrator for delivery and hiring workflows.</p>
+            </div>
+
+            <div class="panel quick-actions">
+                <div class="button-row">
+                    <a class="action-link" href="/" aria-current="page">Chat UI</a>
+                    <a class="action-link" href="/swagger" target="_blank" rel="noreferrer">Swagger</a>
+                    <a class="action-link" href="/health" target="_blank" rel="noreferrer">Health</a>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>Presets</h2>
+                    <span class="hint">Load sample inputs fast</span>
+                </div>
+                <div class="preset-grid">
+                    <button type="button" class="preset-button" data-preset="delivery-release">Delivery Plan</button>
+                    <button type="button" class="preset-button" data-preset="delivery-risk">Delivery Risks</button>
+                    <button type="button" class="preset-button" data-preset="hiring-backend">Hiring Backend</button>
+                    <button type="button" class="preset-button" data-preset="hiring-qa">Hiring QA</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <label for="workflow">Workflow</label>
+                <select id="workflow">
+                    <option value="delivery">Delivery</option>
+                    <option value="hiring">Hiring</option>
+                </select>
+
+                <label for="iterations">Max iterations per agent</label>
+                <input id="iterations" type="number" min="1" max="50" value="10">
+
+                <label for="context">Context</label>
+                <textarea id="context" rows="6" placeholder="Team size, deadline, constraints, budget..."></textarea>
+            </div>
+
+            <div class="panel" id="hiringPanel" hidden>
+                <label for="jobDescription">Job description</label>
+                <textarea id="jobDescription" rows="6" placeholder="Paste the JD here..."></textarea>
+                <div class="upload-row">
+                    <input id="jobDescriptionFile" type="file" accept=".txt,.md,.json,.csv,.log">
+                    <span class="hint">Upload a text-based JD file.</span>
+                </div>
+
+                <label for="candidateCv">Candidate CV</label>
+                <textarea id="candidateCv" rows="8" placeholder="Paste extracted CV text here..."></textarea>
+                <div class="upload-row">
+                    <input id="candidateCvFile" type="file" accept=".txt,.md,.json,.csv,.log">
+                    <span class="hint">Upload a text-based CV file.</span>
+                </div>
+
+                <label for="technicalInterviewRole">Technical interviewer</label>
+                <select id="technicalInterviewRole">
+                    <option value="DEV">DEV</option>
+                    <option value="TEST">TEST</option>
+                </select>
+
+                <label class="checkbox"><input id="autoApproveInterviewSchedule" type="checkbox" checked> Auto-approve PM interview scheduling</label>
+            </div>
+
+            <div class="panel subtle" id="sessionPanel" hidden>
+                <div class="panel-head">
+                    <h2>Interview Session</h2>
+                    <button type="button" class="ghost-button" id="exportNotesButton" disabled>Export Notes</button>
+                </div>
+                <div class="session-meta">
+                    <span class="session-chip" id="sessionStage">idle</span>
+                    <span class="session-chip" id="sessionSpeaker">speaker</span>
+                </div>
+                <p class="session-summary" id="sessionSummary">No hiring session started.</p>
+                <div class="approval-row" id="approvalRow" hidden>
+                    <button type="button" class="decision-button approve" id="approveButton">Approve</button>
+                    <button type="button" class="decision-button reject" id="rejectButton">Reject</button>
+                </div>
+            </div>
+
+            <div class="panel subtle">
+                <div class="panel-head">
+                    <h2>Sample Request</h2>
+                    <button type="button" class="ghost-button" id="copySampleButton">Copy</button>
+                </div>
+                <pre class="sample-request" id="sampleRequest"></pre>
+            </div>
+
+            <div class="panel subtle">
+                <div class="panel-head">
+                    <h2>Local History</h2>
+                    <button type="button" class="ghost-button" id="clearHistoryButton">Clear</button>
+                </div>
+                <div id="historyList" class="history-list"></div>
+            </div>
+
+            <div class="panel subtle" id="timelinePanel" hidden>
+                <div class="panel-head">
+                    <h2>Interview Timeline</h2>
+                    <span class="hint">Transcript view</span>
+                </div>
+                <div id="timelineList" class="timeline-list"></div>
+            </div>
+        </aside>
+
+        <main class="chat-layout">
+            <section class="messages" id="messages">
+                <article class="message assistant">
+                    <div class="bubble">
+                        <p>Describe the project or hiring need, and I will call the orchestrator for you.</p>
+                    </div>
+                </article>
+            </section>
+
+            <form id="chatForm" class="composer">
+                <label class="sr-only" for="prompt">Prompt</label>
+                <textarea id="prompt" rows="3" placeholder="Ask PM Agent to plan a release, screen a candidate, or prepare interviews..."></textarea>
+                <div class="composer-row">
+                    <button type="submit" id="sendButton">Send</button>
+                    <span id="status" class="status"></span>
+                </div>
+            </form>
+        </main>
+    </div>
+
+    <template id="resultTemplate">
+        <article class="message assistant">
+            <div class="bubble result-bubble">
+                <div class="result-summary"></div>
+                <div class="result-roles"></div>
+            </div>
+        </article>
+    </template>
+
+    <template id="historyItemTemplate">
+        <button type="button" class="history-item">
+            <span class="history-item-title"></span>
+            <span class="history-item-meta"></span>
+        </button>
+    </template>
+
+    <template id="timelineItemTemplate">
+        <article class="timeline-item">
+            <div class="timeline-head">
+                <span class="timeline-speaker"></span>
+                <span class="timeline-time"></span>
+            </div>
+            <div class="timeline-message markdown-body"></div>
+        </article>
+    </template>
+
+    <script src="/app.js"></script>
+</body>
+</html>

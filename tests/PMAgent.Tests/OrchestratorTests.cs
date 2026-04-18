@@ -22,6 +22,12 @@ file sealed class FakeLlmClient : ILlmClient
             ### Milestones
             ### Resource Plan
             ### Risk Register
+            ### Hiring Plan
+            ### CV Keywords
+            ### JD Fit Assessment
+            ### Technical Interview Questions
+            ### QA Scenario Questions
+            ### Evaluation Scorecard
             ### Functional Requirements
             ### Use Cases
             ### Architecture
@@ -41,6 +47,7 @@ public class OrchestratorAgentTests
             [
                 new ProductOwnerAgent(llm, NullLogger<ProductOwnerAgent>.Instance),
                 new ProjectManagerAgent(llm, NullLogger<ProjectManagerAgent>.Instance),
+                new HrAgent(llm, NullLogger<HrAgent>.Instance),
                 new BusinessAnalystAgent(llm, NullLogger<BusinessAnalystAgent>.Instance),
                 new DeveloperAgent(llm, NullLogger<DeveloperAgent>.Instance),
                 new TesterAgent(llm, NullLogger<TesterAgent>.Instance)
@@ -50,14 +57,14 @@ public class OrchestratorAgentTests
     }
 
     [Fact]
-    public async Task RunAsync_RunsAllFiveAgents()
+    public async Task RunAsync_RunsAllSixAgents()
     {
         var orchestrator = BuildOrchestrator();
         var request = new OrchestrationRequest("Build an enterprise multi-tenant project management SaaS tool with external integration");
 
         var result = await orchestrator.RunAsync(request);
 
-        Assert.Equal(5, result.AgentOutputs.Count);
+        Assert.Equal(6, result.AgentOutputs.Count);
     }
 
     [Fact]
@@ -71,6 +78,7 @@ public class OrchestratorAgentTests
         var roles = result.AgentOutputs.Select(r => r.Role).ToList();
         Assert.Contains("PO", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("PM", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("HR", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("BA", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("DEV", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("TEST", roles, StringComparer.OrdinalIgnoreCase);
@@ -155,6 +163,18 @@ public class OrchestratorAgentTests
     }
 
     [Fact]
+    public async Task RunAsync_HR_OutputContainsHiringPlan()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest("Plan recruitment for a mobile banking product team");
+
+        var result = await orchestrator.RunAsync(request);
+
+        var hrOutput = result.AgentOutputs.Single(r => r.Role == "HR").Output;
+        Assert.Contains("Hiring Plan", hrOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task RunAsync_DEV_OutputContainsArchitecture()
     {
         var orchestrator = BuildOrchestrator();
@@ -200,7 +220,76 @@ public class OrchestratorAgentTests
         Assert.Contains("PO", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("PM", roles, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("BA", roles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("HR", roles, StringComparer.OrdinalIgnoreCase);
         Assert.DoesNotContain("DEV", roles, StringComparer.OrdinalIgnoreCase);
         Assert.DoesNotContain("TEST", roles, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunAsync_HiringWorkflow_RunsPmHrBaByDefault()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest(
+            "Create a hiring and staffing plan for the project team",
+            Workflow: "hiring",
+            JobDescription: "Senior backend engineer with .NET, APIs, PostgreSQL, and cloud deployment experience.",
+            CandidateCv: "5 years in C#, ASP.NET Core, PostgreSQL, Docker, Azure DevOps, and microservices.");
+
+        var result = await orchestrator.RunAsync(request);
+
+        var roles = result.AgentOutputs.Select(r => r.Role).ToList();
+        Assert.Equal(["PM", "HR", "BA"], roles);
+    }
+
+    [Fact]
+    public async Task RunAsync_HiringWorkflow_WithTechnicalInterviewRoles_RunsPmHrBaDevTest()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest(
+            "Hire application engineers and QA for the next release",
+            Workflow: "hiring",
+            JobDescription: "Need a backend developer and QA engineer with API, automation, and CI/CD experience.",
+            CandidateCv: "Candidate has C#, REST API, xUnit, Playwright, SQL, and CI pipeline experience.",
+            TechnicalInterviewRoles: ["DEV", "TEST"]);
+
+        var result = await orchestrator.RunAsync(request);
+
+        var roles = result.AgentOutputs.Select(r => r.Role).ToList();
+        Assert.Equal(["PM", "HR", "BA", "DEV", "TEST"], roles);
+    }
+
+    [Fact]
+    public async Task RunAsync_HiringWorkflow_SeedsJobDescriptionAndCvIntoAgentContext()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest(
+            "Screen a backend engineer candidate",
+            Workflow: "hiring",
+            JobDescription: "Looking for .NET and PostgreSQL experience.",
+            CandidateCv: "Candidate worked on ASP.NET Core APIs and PostgreSQL scaling.");
+
+        var result = await orchestrator.RunAsync(request);
+
+        var hrOutput = result.AgentOutputs.Single(r => r.Role == "HR").Output;
+        Assert.Contains("Looking for .NET and PostgreSQL experience.", hrOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Candidate worked on ASP.NET Core APIs and PostgreSQL scaling.", hrOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunAsync_HiringWorkflow_DEVInterviewPackContainsTechnicalInterviewQuestions()
+    {
+        var orchestrator = BuildOrchestrator();
+        var request = new OrchestrationRequest(
+            "Prepare a backend technical interview",
+            Workflow: "hiring",
+            JobDescription: "Senior backend developer for distributed APIs.",
+            CandidateCv: "Candidate has .NET, distributed systems, Kafka, and SQL.",
+            TechnicalInterviewRoles: ["DEV"]);
+
+        var result = await orchestrator.RunAsync(request);
+
+        var devOutput = result.AgentOutputs.Single(r => r.Role == "DEV").Output;
+        Assert.Contains("Technical Interview Questions", devOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Evaluation Scorecard", devOutput, StringComparison.OrdinalIgnoreCase);
     }
 }

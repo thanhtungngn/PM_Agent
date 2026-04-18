@@ -22,6 +22,13 @@ public sealed class TesterAgent : SpecializedAgentBase
         - ### Quality Gates (table with Gate, Threshold, Blocks columns)
         - ### Test Cases (sample table with TC#, Description, Input, Expected Output columns - at least 5 cases)
         - ### Definition of Done
+        If the context includes a hiring workflow and TEST is requested for interview support, produce a QA interview pack instead that includes:
+        - ### Interview Objectives
+        - ### QA Scenario Questions (at least 8)
+        - ### Test Design Exercise
+        - ### Automation and Quality Gates Discussion Points
+        - ### Evaluation Scorecard
+        - ### Red Flags
         Align quality gates with the tech stack mentioned in previous context if available.
         """;
 }

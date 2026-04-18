@@ -56,6 +56,7 @@ In practice, a planning run looks like this:
 - **Action planning** — produces a milestone-based plan with owners and review cadence.
 - **Transparent reasoning** — every step the agent takes is visible in the response, so stakeholders can audit or challenge the plan.
 - **Configurable depth** — the `maxIterations` setting controls how many reasoning steps the agent is allowed to take, giving you a cost/quality trade-off knob.
+- **Staged hiring workflow** — supports HR-only screening first, explicit user approvals, role-based interview turns, interview scoring, and persisted HR notes.
 
 ### Orchestrator — Full Team Simulation
 
@@ -65,6 +66,7 @@ The orchestrator mode dispatches the project brief to a virtual start-up deliver
 |---|---|
 | **PO** (Product Owner) | Product vision, goals, user stories, acceptance criteria |
 | **PM** (Project Manager) | Milestones, timeline, resource plan, risk register |
+| **HR** (Human Resources) | Hiring plan, staffing priorities, interview process, onboarding plan |
 | **BA** (Business Analyst) | Functional requirements, use cases, gap analysis |
 | **DEV** (Developer) | Tech stack choice, architecture, API design, implementation approach |
 | **TEST** (Tester) | Test plan, quality gates, coverage targets, sample test cases |
@@ -74,6 +76,25 @@ Each selected role builds on what the previous selected roles produced, so the D
 ---
 
 ## How to Request a Plan
+
+### Browser chat UI
+
+Open `/` in the running API host to use the built-in chat console.
+
+The chat UI supports:
+
+- Delivery workflow prompts.
+- Hiring workflow prompts.
+- Optional hiring inputs for JD, CV, and technical interview packs.
+- Interactive hiring sessions with approval actions and role-by-role candidate responses.
+- Markdown rendering for agent outputs.
+- Hiring transcript timeline and active session restore in the browser.
+- Interview notes export after HR closes the session.
+- Text-file upload to prefill JD and CV fields quickly.
+- Local conversation history stored in the browser.
+- Preset scenarios for delivery and hiring.
+- Sample request payload preview with copy support.
+- Quick links to Swagger and health checks.
 
 ### Single-agent planning
 
@@ -97,13 +118,17 @@ Send a `POST` request to `/api/agent/run` with three fields:
 
 ### Full team orchestration
 
-Send a `POST` request to `/api/orchestrator/run` with three fields:
+Send a `POST` request to `/api/orchestrator/run` with the following fields:
 
 | Field | What to put here | Example |
 |---|---|---|
 | `projectBrief` | High-level description of the project | `"Build a SaaS project management tool"` |
 | `context` | Any constraints or background | `"Start-up, team of 5, 10-week runway"` |
 | `maxIterationsPerAgent` | Reasoning steps allowed per agent (1–50) | `10` (default) |
+| `workflow` | Orchestration mode: `delivery` or `hiring` | `"hiring"` |
+| `jobDescription` | Required when `workflow = hiring`; the JD used for screening | `"Senior backend engineer with .NET and PostgreSQL"` |
+| `candidateCv` | Required when `workflow = hiring`; extracted CV text | `"5 years in ASP.NET Core, SQL, Docker..."` |
+| `technicalInterviewRoles` | Optional in hiring mode; which technical interview packs to generate | `["DEV", "TEST"]` |
 
 **Example request:**
 
@@ -111,11 +136,59 @@ Send a `POST` request to `/api/orchestrator/run` with three fields:
 {
   "projectBrief":          "Build a SaaS project management tool for remote teams",
   "context":               "Start-up phase, team of 5, 10-week runway",
-  "maxIterationsPerAgent": 10
+  "maxIterationsPerAgent": 10,
+  "workflow":              "delivery"
 }
 ```
 
-The response contains a `summary` and five `agentOutputs` — one per role — each with the full deliverable for that role.
+### Hiring workflow orchestration
+
+Use hiring mode when you want the orchestrator to read a CV, compare it with a JD, and prepare an interview process.
+
+In hiring mode, the orchestrator starts with `PM -> HR -> BA` and then appends `DEV` and/or `TEST` when technical interview packs are requested.
+
+**Example request:**
+
+```json
+{
+  "projectBrief": "Hire a backend engineer and QA engineer for the next release",
+  "context": "Remote-first team, budget approved, two interview slots per week",
+  "maxIterationsPerAgent": 10,
+  "workflow": "hiring",
+  "jobDescription": "Need strong C#, ASP.NET Core, PostgreSQL, API design, test automation, and CI/CD experience.",
+  "candidateCv": "Candidate has 5 years in .NET, REST APIs, PostgreSQL tuning, Playwright, xUnit, and Azure DevOps.",
+  "technicalInterviewRoles": ["DEV", "TEST"]
+}
+```
+
+For a full process guide, see [docs/hiring-workflow.md](hiring-workflow.md).
+
+### Interactive hiring interview
+
+Use the dedicated hiring session API when you want the process to follow an approval-based interview flow instead of one-shot orchestration.
+
+The staged process is:
+
+1. HR screens the CV first.
+2. If fit is above 70%, HR asks the user whether the CV may be forwarded to PM, BA, and one technical interviewer.
+3. PM prepares the interview schedule and can wait for approval, or proceed immediately when auto-approval is enabled.
+4. The interview starts with role introductions, then the candidate introduces themselves.
+5. PM covers project context and PM questions.
+6. DEV or TEST covers technical questions.
+7. BA covers scenario and behavior questions.
+8. HR records notes throughout the interview.
+9. A scoring agent updates the interview score and can end the session early when the score is too low.
+10. The panel closes with Q/A and HR writes the interview notes to a document file.
+
+This staged flow is exposed under `/api/hiring/sessions`.
+
+The browser UI can drive this staged flow directly: HR approval, PM schedule approval, candidate turn submission, timeline review, and notes export all happen from the same page.
+
+JD and CV inputs can also be loaded from uploaded plain-text files so the user does not need to paste long content manually.
+
+If you prefer raw API exploration, Swagger is available at `/swagger`.
+
+The response contains a `summary` and a route-dependent collection of `agentOutputs` — one per executed role — each with the full deliverable for that role.
 
 Each orchestrated `agentOutput` now includes routing metadata used for dynamic orchestration:
 
@@ -180,7 +253,14 @@ This design has two business benefits:
 | **Action Plan** | A structured list of next steps with owners and deadlines |
 | **MaxIterations** | The maximum number of reasoning steps the agent may take in one run |
 | **Orchestrator** | The coordinator that dispatches the project brief to each specialized agent in sequence |
-| **Specialized Agent** | A virtual team member (PO, PM, BA, DEV, TEST) that produces a role-specific deliverable |
+| **Specialized Agent** | A virtual team member (PO, PM, HR, BA, DEV, TEST) that produces a role-specific deliverable |
 | **ProjectBrief** | A plain-language description of the project handed to the orchestrator |
 | **AgentTaskResult** | The deliverable produced by a single specialized agent |
 | **OrchestrationResult** | The aggregated output from all specialized agents plus a cross-role summary |
+| **Workflow** | The orchestrator mode. `delivery` is for project planning; `hiring` is for CV screening, JD fit, and interview preparation |
+| **JobDescription** | The target job requirements used in hiring mode |
+| **CandidateCv** | Extracted CV text used for keyword extraction and fit analysis in hiring mode |
+| **TechnicalInterviewRoles** | Optional list of technical interview packs to generate in hiring mode (`DEV`, `TEST`) |
+| **Hiring Session** | A stateful interview workflow with approvals, transcript turns, score updates, and HR notes |
+| **Screening Fit Score** | The HR gate score used to decide whether the CV should move beyond initial screening |
+| **Interview Score** | The running score maintained during the interview to decide whether the process should continue |

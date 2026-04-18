@@ -21,6 +21,11 @@ public sealed class ProjectManagerAgent : SpecializedAgentBase
         - ### Resource Plan
         - ### Risk Register (table with Risk, Likelihood, Impact, Mitigation columns)
         - ### Communication Plan
+        If the context includes a hiring workflow, switch to recruitment delivery planning and include:
+        - ### Hiring Milestones
+        - ### Interview Panel Schedule
+        - ### Stakeholder RACI
+        - ### Decision SLA and Escalation Path
         Be specific, include realistic week-based timelines, and use markdown tables.
         """;
 }

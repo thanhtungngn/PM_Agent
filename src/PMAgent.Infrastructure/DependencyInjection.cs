@@ -14,6 +14,8 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        var healthChecks = services.AddHealthChecks();
+
         // LLM settings + client — provider is selected by LlmSettings:Provider
         var llmSettings = configuration.GetSection("LlmSettings").Get<LlmSettings>() ?? new LlmSettings();
         services.AddSingleton(llmSettings);
@@ -21,8 +23,7 @@ public static class DependencyInjection
         if (llmSettings.Provider == LlmProvider.Ollama)
         {
             services.AddScoped<ILlmClient, OllamaLlmClient>();
-            services.AddHealthChecks()
-                    .AddCheck<OllamaHealthCheck>("ollama", tags: ["ready"]);
+            healthChecks.AddCheck<OllamaHealthCheck>("ollama", tags: ["ready"]);
         }
         else
             services.AddScoped<ILlmClient, OpenAiLlmClient>();
@@ -30,6 +31,8 @@ public static class DependencyInjection
         // Simple rule-based planner (legacy endpoint)
         services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>();
         services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>();
+        services.AddScoped<IInterviewScoringAgent, LlmInterviewScoringAgent>();
+        services.AddScoped<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
         // Agent tools — registered as IAgentTool so they are all resolved
         // by IEnumerable<IAgentTool> inside AgentExecutor.
@@ -44,6 +47,7 @@ public static class DependencyInjection
         // resolved by IEnumerable<ISpecializedAgent> inside OrchestratorAgent.
         services.AddScoped<ISpecializedAgent, ProductOwnerAgent>();
         services.AddScoped<ISpecializedAgent, ProjectManagerAgent>();
+        services.AddScoped<ISpecializedAgent, HrAgent>();
         services.AddScoped<ISpecializedAgent, BusinessAnalystAgent>();
         services.AddScoped<ISpecializedAgent, DeveloperAgent>();
         services.AddScoped<ISpecializedAgent, TesterAgent>();

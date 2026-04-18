@@ -5,10 +5,15 @@ namespace PMAgent.Infrastructure.Services;
 
 public sealed class RuleBasedAgentRoutingPolicy : IAgentRoutingPolicy
 {
-    private static readonly string[] FullChain = ["PO", "PM", "BA", "DEV", "TEST"];
+    private static readonly string[] FullChain = ["PO", "PM", "HR", "BA", "DEV", "TEST"];
+    private static readonly string[] HiringCoreRoute = ["PM", "HR", "BA"];
+    private static readonly string[] TechnicalInterviewRoleOrder = ["DEV", "TEST"];
 
     public IReadOnlyList<string> BuildInitialRoute(OrchestrationRequest request)
     {
+        if (string.Equals(request.Workflow, "hiring", StringComparison.OrdinalIgnoreCase))
+            return BuildHiringRoute(request);
+
         if (string.IsNullOrWhiteSpace(request.ProjectBrief))
             return FullChain;
 
@@ -18,6 +23,9 @@ public sealed class RuleBasedAgentRoutingPolicy : IAgentRoutingPolicy
         // For high-complexity initiatives, prefer full-team coverage.
         if (IsHighComplexity(brief, lower))
             return FullChain;
+
+        if (IsHiringIntent(lower))
+            return ["PM", "HR", "BA"];
 
         if (IsPlanningIntent(lower))
             return ["PO", "PM", "BA"];
@@ -75,6 +83,16 @@ public sealed class RuleBasedAgentRoutingPolicy : IAgentRoutingPolicy
         || lower.Contains("quality")
         || lower.Contains("regression");
 
+    private static bool IsHiringIntent(string lower) =>
+        lower.Contains("hire")
+        || lower.Contains("hiring")
+        || lower.Contains("recruit")
+        || lower.Contains("recruitment")
+        || lower.Contains("staffing")
+        || lower.Contains("talent")
+        || lower.Contains("headcount")
+        || lower.Contains("interview");
+
     private static bool IsHighComplexity(string brief, string lower) =>
         brief.Length > 220
         || lower.Contains("enterprise")
@@ -84,4 +102,20 @@ public sealed class RuleBasedAgentRoutingPolicy : IAgentRoutingPolicy
         || lower.Contains("real-time")
         || lower.Contains("distributed")
         || lower.Contains("integration");
+
+    private static IReadOnlyList<string> BuildHiringRoute(OrchestrationRequest request)
+    {
+        var route = new List<string>(HiringCoreRoute);
+
+        if (request.TechnicalInterviewRoles is null)
+            return route;
+
+        foreach (var role in TechnicalInterviewRoleOrder)
+        {
+            if (request.TechnicalInterviewRoles.Contains(role, StringComparer.OrdinalIgnoreCase))
+                route.Add(role);
+        }
+
+        return route;
+    }
 }

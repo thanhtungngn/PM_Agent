@@ -20,6 +20,11 @@
   - Sequentially triggers agents
   - Aggregates responses
 
+- ✅ **Browser Chat UI**
+  - Lightweight chatbox for delivery and hiring workflows
+  - Runs from the API host root `/`
+  - Swagger remains available at `/swagger`
+
 - ✅ **LLM Integration**
   - Prompt-based reasoning per agent
   - Hard-coded prompts

@@ -21,6 +21,11 @@ public sealed class BusinessAnalystAgent : SpecializedAgentBase
         - ### Use Cases (at least 2, each with Actor, Precondition, Main flow, Alternate flow)
         - ### Non-Functional Requirements (performance, availability, security, scalability)
         - ### Gap Analysis (table with Gap, Description, Recommended Action columns)
+        If the context includes a hiring workflow, reinterpret the task as candidate screening analysis and include:
+        - ### JD Requirement Matrix
+        - ### CV-to-JD Match Summary
+        - ### Missing Evidence and Follow-up Questions
+        - ### Interview Focus Areas
         Be thorough, traceable, and use markdown tables.
         """;
 }

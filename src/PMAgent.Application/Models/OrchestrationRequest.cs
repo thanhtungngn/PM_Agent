@@ -6,4 +6,8 @@ namespace PMAgent.Application.Models;
 public sealed record OrchestrationRequest(
     string ProjectBrief,
     string Context = "",
-    int MaxIterationsPerAgent = 10);
+    int MaxIterationsPerAgent = 10,
+    string Workflow = "delivery",
+    string JobDescription = "",
+    string CandidateCv = "",
+    IReadOnlyCollection<string>? TechnicalInterviewRoles = null);

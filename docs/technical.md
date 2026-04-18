@@ -10,7 +10,8 @@
 ```
 PMAgent.slnx
 ├── src/
-│   ├── PMAgent.Api              → HTTP controllers, request validation
+│   ├── PMAgent.Api              → HTTP controllers, request validation,
+│   │                              static browser chat UI and hiring session console in wwwroot/
 │   ├── PMAgent.Application      → Interfaces + data models (no implementation)
 │   ├── PMAgent.Domain           → Domain entities (extensible placeholder)
 │   └── PMAgent.Infrastructure   → AgentExecutor, OrchestratorAgent,
@@ -23,7 +24,7 @@ PMAgent.slnx
 
 | Layer | Responsibility |
 |---|---|
-| **Api** | Expose HTTP endpoints, validate request surface, delegate to application/infrastructure |
+| **Api** | Expose HTTP endpoints, validate request surface, serve the browser chat UI, delegate to application/infrastructure |
 | **Application** | Define `IAgentExecutor`, `IAgentTool`, `IAgentPlanner`, `ISpecializedAgent`, `IOrchestratorAgent` contracts and all request/response models — zero implementation |
 | **Infrastructure** | Implement `AgentExecutor`, all tools, legacy planner, and DI wiring |
 | **Domain** | Core business entities — currently a placeholder; grow into it as features are added |
@@ -108,7 +109,7 @@ record AgentRunResult(
 ```csharp
 // src/PMAgent.Application/Models/AgentTask.cs
 record AgentTask(
-    string Role,     // Target agent role, e.g. "PO", "PM", "BA", "DEV", "TEST"
+  string Role,     // Target agent role, e.g. "PO", "PM", "HR", "BA", "DEV", "TEST"
     string Goal,     // The project brief forwarded to the agent
     string Context   // Accumulated context from all predecessor agents
 );
@@ -136,7 +137,11 @@ record AgentTaskResult(
 record OrchestrationRequest(
     string ProjectBrief,              // High-level description of the project
     string Context = "",              // Optional background context
-    int    MaxIterationsPerAgent = 10 // Loop safety cap per agent; valid range: 1–50
+  int    MaxIterationsPerAgent = 10, // Loop safety cap per agent; valid range: 1–50
+  string Workflow = "delivery",     // delivery | hiring
+  string JobDescription = "",       // Required in hiring mode
+  string CandidateCv = "",          // Required in hiring mode
+  IReadOnlyCollection<string>? TechnicalInterviewRoles = null // Optional: DEV and/or TEST
 );
 ```
 
@@ -147,6 +152,58 @@ record OrchestrationRequest(
 record OrchestrationResult(
     string                               Summary,      // Stitched summary across all agents
     IReadOnlyCollection<AgentTaskResult> AgentOutputs  // One result per specialized agent
+);
+```
+
+### `HiringSessionStartRequest`
+
+```csharp
+// src/PMAgent.Application/Models/HiringSessionStartRequest.cs
+record HiringSessionStartRequest(
+  string ProjectBrief,
+  string JobDescription,
+  string CandidateCv,
+  string Context = "",
+  string TechnicalInterviewRole = "DEV",
+  bool AutoApproveInterviewSchedule = true
+);
+```
+
+### `HiringApprovalRequest`
+
+```csharp
+// src/PMAgent.Application/Models/HiringApprovalRequest.cs
+record HiringApprovalRequest(
+  bool Approved = true,
+  string Comment = ""
+);
+```
+
+### `HiringCandidateResponseRequest`
+
+```csharp
+// src/PMAgent.Application/Models/HiringCandidateResponseRequest.cs
+record HiringCandidateResponseRequest(string Message);
+```
+
+### `HiringSessionResult`
+
+```csharp
+// src/PMAgent.Application/Models/HiringSessionResult.cs
+record HiringSessionResult(
+  Guid SessionId,
+  string Stage,
+  bool RequiresUserApproval,
+  string ApprovalType,
+  double ScreeningFitScore,
+  double InterviewScore,
+  string CurrentSpeaker,
+  string CurrentPrompt,
+  string StatusSummary,
+  string TechnicalInterviewRole,
+  string NotesDocumentPath,
+  IReadOnlyCollection<string> Participants,
+  IReadOnlyCollection<HiringTranscriptTurn> Transcript
 );
 ```
 
@@ -219,6 +276,34 @@ bool ShouldFallbackToFullChain(IReadOnlyCollection<AgentTaskResult> completedRes
 
 Implemented by `RuleBasedAgentRoutingPolicy`. Provides the baseline routing matrix and transition guards (early-stop and fallback).
 
+### `IHiringWorkflowService`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IHiringWorkflowService.cs
+Task<HiringSessionResult> StartAsync(HiringSessionStartRequest request, CancellationToken ct);
+Task<HiringSessionResult?> GetAsync(Guid sessionId, CancellationToken ct);
+Task<HiringSessionResult> ApproveScreeningAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken ct);
+Task<HiringSessionResult> ApproveInterviewScheduleAsync(Guid sessionId, HiringApprovalRequest request, CancellationToken ct);
+Task<HiringSessionResult> SubmitCandidateResponseAsync(Guid sessionId, HiringCandidateResponseRequest request, CancellationToken ct);
+```
+
+Implemented by `InMemoryHiringWorkflowService`. Coordinates the staged hiring process: HR screening, user approvals, interview turns, scoring, and note persistence.
+
+### `IInterviewScoringAgent`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IInterviewScoringAgent.cs
+Task<InterviewScoreResult> EvaluateAsync(
+  string projectBrief,
+  string jobDescription,
+  string technicalInterviewRole,
+  IReadOnlyCollection<HiringTranscriptTurn> transcript,
+  int candidateResponseCount,
+  CancellationToken ct);
+```
+
+Implemented by `RuleBasedInterviewScoringAgent`. Produces a running interview score and decides whether the interview should stop early.
+
 ---
 
 ## Built-in Tools
@@ -244,8 +329,8 @@ Implemented by `RuleBasedAgentRoutingPolicy`. Provides the baseline routing matr
 
 ## Specialized Agents
 
-The orchestrator pattern adds five role-specific agents. All five extend `SpecializedAgentBase`, which centralises the shared logic:
-- Constructor injection of `ILlmClient`
+The orchestrator pattern adds six role-specific agents. All six extend `SpecializedAgentBase`, which centralises the shared logic:
+- Constructor injection of `ILlmClient` and `ILogger`
 - `BuildUserMessage` — formats the goal + accumulated context into a single user prompt
 - `ExecuteAsync` — calls `ILlmClient.CompleteAsync` and wraps the result in `AgentTaskResult`
 
@@ -255,7 +340,11 @@ Each concrete agent only declares three things:
 // src/PMAgent.Infrastructure/Agents/SpecializedAgentBase.cs
 public abstract class SpecializedAgentBase : ISpecializedAgent
 {
-    protected SpecializedAgentBase(ILlmClient llm) => _llm = llm;
+  protected SpecializedAgentBase(ILlmClient llm, ILogger logger)
+  {
+    _llm = llm;
+    _logger = logger;
+  }
 
     public abstract string Role { get; }
     public abstract string Description { get; }
@@ -269,6 +358,7 @@ public abstract class SpecializedAgentBase : ISpecializedAgent
 |---|---|---|
 | `PO` | `ProductOwnerAgent` | Product vision, goals, user stories, acceptance criteria |
 | `PM` | `ProjectManagerAgent` | Milestones, timeline, resource plan, risk register |
+| `HR` | `HrAgent` | Hiring plan, staffing strategy, interview process, onboarding checkpoints |
 | `BA` | `BusinessAnalystAgent` | Functional requirements, use cases, gap analysis |
 | `DEV` | `DeveloperAgent` | Tech stack, architecture, API design, implementation approach |
 | `TEST` | `TesterAgent` | Test plan, test types, quality gates, coverage targets |
@@ -313,7 +403,7 @@ OrchestratorAgent.RunAsync(OrchestrationRequest)
    ```csharp
    services.AddScoped<ISpecializedAgent, YourNewAgent>();
    ```
-3. Add the role token to the `AgentOrder` array in `OrchestratorAgent` at the correct position.
+3. Add the role token to the full-chain order in `RuleBasedAgentRoutingPolicy` (and keep `OrchestratorAgent.AgentOrder` aligned for fallback queueing).
 4. **Update `docs/technical.md`** — add a row to the Specialized Agents table.
 5. **Update `docs/business.md`** — describe the new role in the Key Capabilities section.
 
@@ -356,6 +446,14 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
 ---
 
 ## API Reference
+
+### Browser entry points
+
+| Path | Purpose |
+|---|---|
+| `/` | Static chat UI for interacting with the orchestrator in the browser, including markdown output rendering, local history, presets, and sample payload preview |
+| `/swagger` | Swagger UI for inspecting and testing the HTTP API |
+| `/health` | Health-check endpoint |
 
 ### `POST /api/agent/run`
 
@@ -428,7 +526,8 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
 {
   "projectBrief":          "Build a SaaS project management tool for remote teams",
   "context":               "Start-up phase, team of 5, 10-week runway",
-  "maxIterationsPerAgent": 10
+  "maxIterationsPerAgent": 10,
+  "workflow":              "delivery"
 }
 ```
 
@@ -437,6 +536,10 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
 | `projectBrief` | string | yes | Non-empty |
 | `context` | string | no | Free text; seeds the reasoning context |
 | `maxIterationsPerAgent` | int | no | 1–50; default: 10 |
+| `workflow` | string | no | `delivery` or `hiring`; default: `delivery` |
+| `jobDescription` | string | conditional | Required when `workflow = hiring` |
+| `candidateCv` | string | conditional | Required when `workflow = hiring` |
+| `technicalInterviewRoles` | string[] | no | Only `DEV` and/or `TEST` |
 
 **Response — `200 OK`**
 
@@ -472,6 +575,57 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
 |---|---|
 | `400 Bad Request` | `projectBrief` is empty or whitespace |
 | `400 Bad Request` | `maxIterationsPerAgent` is outside 1–50 |
+| `400 Bad Request` | `workflow` is not `delivery` or `hiring` |
+| `400 Bad Request` | `jobDescription` or `candidateCv` is missing in hiring mode |
+| `400 Bad Request` | `technicalInterviewRoles` contains unsupported role values |
+
+### `POST /api/hiring/sessions`
+
+Starts a staged hiring session. HR screens the CV first and asks for user approval before forwarding the CV to PM, BA, and the selected technical interviewer.
+
+**Request**
+
+```json
+{
+  "projectBrief": "Hire a backend engineer for the platform team",
+  "jobDescription": "Need C#, ASP.NET Core, PostgreSQL, Docker, and API design experience.",
+  "candidateCv": "Built ASP.NET Core APIs with PostgreSQL, Docker, Azure deployment pipelines, and production support.",
+  "context": "Remote-first team, two interviewers available this week.",
+  "technicalInterviewRole": "DEV",
+  "autoApproveInterviewSchedule": true
+}
+```
+
+### `POST /api/hiring/sessions/{sessionId}/approve-screening`
+
+Moves the workflow forward after HR screening. If approved, PM prepares the interview schedule; if `autoApproveInterviewSchedule = true`, the interview starts immediately.
+
+### `POST /api/hiring/sessions/{sessionId}/approve-interview`
+
+Used only when the PM schedule requires explicit user approval before the interview starts.
+
+### `POST /api/hiring/sessions/{sessionId}/candidate-response`
+
+Submits the candidate's answer during the interview. The workflow then records HR notes, updates the interview score, and advances to the next interviewer or ends the interview.
+
+### `GET /api/hiring/sessions/{sessionId}`
+
+Returns the current hiring session state, approvals, transcript, score, and notes document path.
+
+### `GET /api/hiring/sessions/{sessionId}/notes`
+
+Returns the generated markdown interview notes file when the session has already produced one. This is the endpoint used by the browser UI for notes export.
+
+### Browser entrypoint `/`
+
+The root path serves the static browser client from `src/PMAgent.Api/wwwroot/`.
+
+The browser client supports two interaction modes:
+
+- one-shot delivery orchestration through `/api/orchestrator/run`
+- staged hiring sessions through `/api/hiring/sessions`
+
+The hiring console keeps the active session in browser storage, renders a transcript timeline, exports HR notes through `/api/hiring/sessions/{sessionId}/notes`, and can prefill JD/CV inputs from uploaded text files.
 
 ### `POST /api/planning/next-actions` _(legacy)_
 
@@ -563,19 +717,26 @@ dotnet run --project src/PMAgent.Api --launch-profile Development
 
 ```csharp
 // src/PMAgent.Api/Program.cs
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 ```
 
 ```csharp
 // src/PMAgent.Infrastructure/DependencyInjection.cs
+var healthChecks = services.AddHealthChecks();
+
 // ILlmClient — provider selected at startup from LlmSettings:Provider
 if (llmSettings.Provider == LlmProvider.Ollama)
+{
     services.AddScoped<ILlmClient, OllamaLlmClient>();  // local / zero-cost
+  healthChecks.AddCheck<OllamaHealthCheck>("ollama", tags: ["ready"]);
+}
 else
     services.AddScoped<ILlmClient, OpenAiLlmClient>();  // production
 
 services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>(); // legacy endpoint
 services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>(); // baseline dynamic route rules
+services.AddSingleton<IInterviewScoringAgent, RuleBasedInterviewScoringAgent>();
+services.AddSingleton<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
 services.AddScoped<IAgentTool, ScopeAnalysisTool>();        // registered as IAgentTool
 services.AddScoped<IAgentTool, RiskAssessmentTool>();        // all resolved together
@@ -591,6 +752,8 @@ services.AddScoped<ISpecializedAgent, TesterAgent>();
 
 services.AddScoped<IOrchestratorAgent, OrchestratorAgent>();
 ```
+
+Health check services are always registered because the API maps `/health` in every environment. The Ollama-specific probe is added only when `LlmSettings.Provider = Ollama`.
 
 `AgentExecutor` receives all `IAgentTool` registrations via constructor injection as `IEnumerable<IAgentTool>`. `OrchestratorAgent` uses the same pattern with `IEnumerable<ISpecializedAgent>`. Adding a new agent requires only one `AddScoped` line.
 
@@ -619,20 +782,32 @@ dotnet test PMAgent.slnx
 | `AgentExecutorTests` | `RunAsync_EachStepHasNonEmptyThoughtAndOutput` | Every step has non-empty `Thought` and `ActionOutput` |
 | `AgentExecutorTests` | `RunAsync_FinalAnswerContainsGoal` | `FinalAnswer` includes the original goal string |
 | `AgentExecutorTests` | `RunAsync_RespectsMaxIterationsGuard` | `MaxIterations = 1` produces exactly one step |
-| `OrchestratorAgentTests` | `RunAsync_RunsAllFiveAgents` | `AgentOutputs.Count == 5` |
-| `OrchestratorAgentTests` | `RunAsync_OutputContainsAllRoles` | All five role tokens present in outputs |
+| `OrchestratorAgentTests` | `RunAsync_RunsAllSixAgents` | `AgentOutputs.Count == 6` for full-chain scenarios |
+| `OrchestratorAgentTests` | `RunAsync_OutputContainsAllRoles` | PO/PM/HR/BA/DEV/TEST role tokens are present in outputs |
 | `OrchestratorAgentTests` | `RunAsync_AllAgentsReportSuccess` | Every `AgentTaskResult.Success == true` |
 | `OrchestratorAgentTests` | `RunAsync_SummaryIsNotEmpty` | `Summary` is non-empty |
 | `OrchestratorAgentTests` | `RunAsync_PO_OutputContainsBrief` | PO output includes the project brief string |
 | `OrchestratorAgentTests` | `RunAsync_PM_OutputContainsMilestones` | PM output contains "Milestone" |
+| `OrchestratorAgentTests` | `RunAsync_HR_OutputContainsHiringPlan` | HR output contains "Hiring Plan" |
 | `OrchestratorAgentTests` | `RunAsync_BA_OutputContainsRequirements` | BA output contains "Requirement" |
 | `OrchestratorAgentTests` | `RunAsync_DEV_OutputContainsArchitecture` | DEV output contains "Architecture" |
 | `OrchestratorAgentTests` | `RunAsync_TEST_OutputContainsTestPlan` | TEST output contains "Test Plan" |
 | `OrchestratorAgentTests` | `RunAsync_EmptyBrief_ThrowsArgumentException` | Empty brief throws `ArgumentException` |
 | `OrchestratorAgentTests` | `RunAsync_AllAgentsExposeRoutingMetadata` | Every output includes routing metadata defaults |
 | `OrchestratorAgentTests` | `RunAsync_PlanningIntent_SkipsDevAndTest` | Planning intent route excludes DEV and TEST |
+| `OrchestratorAgentTests` | `RunAsync_HiringWorkflow_RunsPmHrBaByDefault` | Legacy orchestrator hiring route executes PM → HR → BA |
+| `OrchestratorAgentTests` | `RunAsync_HiringWorkflow_WithTechnicalInterviewRoles_RunsPmHrBaDevTest` | Hiring workflow appends requested technical interview roles |
+| `OrchestratorAgentTests` | `RunAsync_HiringWorkflow_SeedsJobDescriptionAndCvIntoAgentContext` | Hiring workflow injects JD and CV text into agent context |
+| `OrchestratorAgentTests` | `RunAsync_HiringWorkflow_DEVInterviewPackContainsTechnicalInterviewQuestions` | DEV output contains hiring-specific technical interview sections |
+| `HiringWorkflowTests` | `StartAsync_FitAboveThreshold_WaitsForHrApproval` | HR screening gate waits for user approval when fit is above threshold |
+| `HiringWorkflowTests` | `ApproveScreening_AutoApproveDisabled_WaitsForPmApproval` | PM schedule step can wait for user approval |
+| `HiringWorkflowTests` | `HiringInterview_ProgressesThroughPanelAndWritesNotes` | Interview runs by turn and writes notes to a document file |
+| `HiringWorkflowTests` | `CandidateResponses_LowScore_StopsInterviewEarly` | Low interview score stops the session early |
+| `HiringWorkflowTests` | `StartAsync_FitBelowThreshold_RejectsImmediately` | HR rejects low-fit CVs without forwarding them |
 | `RoutingPolicyTests` | `BuildInitialRoute_PlanningIntent_ReturnsPoPmBa` | Planning intent uses PO → PM → BA route |
 | `RoutingPolicyTests` | `BuildInitialRoute_BuildIntent_ReturnsPoBaDevTest` | Build intent uses PO → BA → DEV → TEST route |
+| `RoutingPolicyTests` | `BuildInitialRoute_HiringWorkflow_ReturnsPmHrBa` | Hiring workflow uses PM → HR → BA route |
+| `RoutingPolicyTests` | `BuildInitialRoute_HiringWorkflowWithTechnicalRoles_ReturnsPmHrBaDevTest` | Hiring workflow uses PM → HR → BA plus requested technical roles |
 | `RoutingPolicyTests` | `BuildInitialRoute_HighComplexity_ReturnsFullChain` | High-complexity briefs use full-chain route |
 | `RoutingPolicyTests` | `ShouldEarlyStop_StopDecisionWithHighConfidence_ReturnsTrue` | High-confidence stop decision triggers early-stop |
 | `RoutingPolicyTests` | `ShouldFallbackToFullChain_EscalateDecision_ReturnsTrue` | Escalate decision triggers full-chain fallback |
