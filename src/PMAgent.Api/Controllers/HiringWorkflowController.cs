@@ -39,8 +39,18 @@ public sealed class HiringWorkflowController(IHiringWorkflowService hiringWorkfl
             return BadRequest("TargetSeniority must be AUTO, JUNIOR, MID, or SENIOR.");
         }
 
-        var result = await hiringWorkflowService.StartAsync(request, cancellationToken);
+        var normalizedRequest = NormalizeHiringRequest(request);
+        var result = await hiringWorkflowService.StartAsync(normalizedRequest, cancellationToken);
         return Ok(result);
+    }
+
+    private static HiringSessionStartRequest NormalizeHiringRequest(HiringSessionStartRequest request)
+    {
+        var technicalRole = string.Equals(request.TechnicalInterviewRole, "TEST", StringComparison.OrdinalIgnoreCase)
+            ? "DEV"
+            : request.TechnicalInterviewRole;
+
+        return request with { TechnicalInterviewRole = technicalRole };
     }
 
     [HttpGet("{sessionId:guid}")]

@@ -250,7 +250,9 @@ sealed record InterviewQuestionTemplate
 {
   string Speaker;
   string TextTemplate;
+  string? VietnameseTextTemplate;
   string? FollowUpTemplate;
+  string? VietnameseFollowUpTemplate;
   List<string> HintKeywords;
   string AppliesToTechnicalRole;
 }
@@ -264,7 +266,9 @@ sealed record HiringWorkflowSettings
 {
   double ScreeningPassThreshold;
   int HintKeywordCount;
+  int MaxCandidateRequestsPerQuestion;
   int GeneralQuestionCount;
+  int TechnicalQuestionCount;
   List<InterviewQuestionTemplate> GeneralQuestions;
   List<InterviewQuestionTemplate> TechnicalQuestions;
   List<InterviewQuestionTemplate> BusinessQuestions;
@@ -273,14 +277,25 @@ sealed record HiringWorkflowSettings
 }
 ```
 
-The configured question templates now act as fallback structure only. `ConfigurableInterviewQuestionProvider` first asks the LLM to generate the full staged interview pack, including PM, technical, BA, and HR questions plus tailored follow-ups. If the model output is invalid or incomplete, the provider falls back to the configured templates. It also resolves a hiring seniority target from the request or inferred hiring context so question scope stays aligned to `JUNIOR`, `MID`, or `SENIOR` expectations.
+The configured question templates now act as fallback structure only. `ConfigurableInterviewQuestionProvider` first asks the LLM to generate a one-shot interview question bank, including one PM opener, multiple technical rounds, and one HR closing question. If the model output is invalid or incomplete, the provider falls back to the configured templates. It also resolves a hiring seniority target from the request or inferred hiring context so question scope stays aligned to `JUNIOR`, `MID`, or `SENIOR` expectations.
 
-At runtime, the same provider also reads the live session markdown notes to do two things:
+Before generating the bank, the provider infers stack priorities fresh from the current project brief and JD, then compares the candidate CV against those priorities. It now prioritizes recognized skills from five categories first: programming languages, frameworks, system design, databases, and agile/scrum delivery methodology. From that, it derives ranked requirement focus, direct overlap, project-critical gaps, and candidate-adjacent strengths. The main bias is toward the current JD-specific requirement focus and the overlap set, so technical questions stay close to this hiring request's actual stack needs rather than drifting toward unrelated CV strengths or a generic cross-job stack profile. Project-critical gaps can still appear, but mainly as transferability questions instead of pure recall checks.
 
-- generate the next interviewer question for the planned speaker
+The provider now also accepts a locked interview language (`EN` or `VI`). One-shot question generation is instructed to use that language only, and if the returned question bank does not match it, the provider falls back to configured templates. Those fallback templates can define explicit Vietnamese text and follow-up variants through `VietnameseTextTemplate` and `VietnameseFollowUpTemplate`.
+
+The default interview mix is intentionally stack-heavy:
+
+- `GeneralQuestionCount = 1` to anchor the discussion in the candidate's real experience
+- `TechnicalQuestionCount = 8` to spend most evaluated time on project-stack depth
+- one HR closing round
+
+At runtime, the same provider still reads the live session markdown notes to do one thing:
+
 - generate a conversational interviewer reply when the candidate asks a question during the interview
 
-This keeps both question generation and interviewer replies grounded in the same notes artifact rather than rebuilding context from raw JD/CV fields every turn.
+This keeps candidate clarification replies grounded in the same notes artifact without re-planning the main interview questions on every turn.
+
+`InMemoryHiringWorkflowService` classifies each candidate turn before scoring. Hint requests route to the hint flow, non-answer interview requests route to a conversational reply flow, and only actual answers enter the evaluation path. `MaxCandidateRequestsPerQuestion` controls how many side requests are tolerated on the same active question before the interviewer adds a focus reminder and explicitly returns the candidate to that question.
 
 ### `InterviewScoringSettings`
 
@@ -290,6 +305,7 @@ sealed record InterviewScoringSettings
 {
   double BaseScore;
   double EarlyStopThreshold;
+  double SituationQuestionScoreCap;
   int MinimumResponsesBeforeStop;
   int KeywordHitPoints;
   double KeywordHitMax;
@@ -305,7 +321,7 @@ sealed record InterviewScoringSettings
 }
 ```
 
-The primary scoring path is now fully LLM-first. `Dimensions` defines the evaluation breakdown requested from the model, including names, descriptions, and weights. The default rubric is intentionally broader than keyword matching: `communication`, `problem_solving`, `technical_judgment`, `ownership`, and `collaboration`. If the LLM output is unavailable or invalid, the fallback no longer evaluates transcript text heuristically; it returns a conservative non-evaluating result.
+The primary scoring path is now fully LLM-first. `Dimensions` defines the evaluation breakdown requested from the model, including names, descriptions, and weights. The default rubric is intentionally broader than keyword matching: `communication`, `problem_solving`, `technical_judgment`, `ownership`, and `collaboration`. `SituationQuestionScoreCap` limits situational or hypothetical answers to 20% of the total evaluation weight, so most of the score must come from real stack evidence and concrete delivery work. The evaluator now scores the latest answer first, returns answer-quality metadata for feedback and follow-up gating, and the workflow aggregates those per-answer scores into the session score. If the LLM output is unavailable or invalid, the fallback applies a conservative latest-answer heuristic instead of a fixed neutral score.
 
 ### `InterviewSeniorityProfile`
 
@@ -354,10 +370,15 @@ sealed record InterviewScoreResult(
   double Score,
   bool ShouldStop,
   string Rationale,
-  IReadOnlyCollection<InterviewScoreDimension>? Dimensions = null);
+  IReadOnlyCollection<InterviewScoreDimension>? Dimensions = null,
+  string Feedback = "",
+  string AnswerQuality = "PARTIAL",
+  bool ShouldAskFollowUp = false);
 ```
 
-The interview scorer now returns both an overall score and an optional dimension breakdown used in notes, transcript summaries, and debugging.
+The interview scorer now returns the score of the latest answer, an optional dimension breakdown, interviewer feedback text, an answer-quality label, and whether the workflow should ask a follow-up. `InMemoryHiringWorkflowService` keeps a running average of answer scores as the session-level interview score.
+
+At runtime, `InMemoryHiringWorkflowService` also adds a short interviewer feedback turn after each accepted candidate answer. That feedback is appended to the transcript and the live Q&A log so the interview feels more like a guided conversation instead of a silent score update. Runtime rendering no longer prefixes those turns with `Feedback:`, so the transcript reads like a normal interviewer response rather than an evaluator annotation.
 
 ---
 

@@ -4,6 +4,7 @@ public sealed record InterviewScoringSettings
 {
     public double BaseScore { get; init; } = 35;
     public double EarlyStopThreshold { get; init; } = 40;
+    public double SituationQuestionScoreCap { get; init; } = 0.20;
     public int MinimumResponsesBeforeStop { get; init; } = 2;
     public int KeywordHitPoints { get; init; } = 4;
     public double KeywordHitMax { get; init; } = 30;
@@ -19,6 +20,7 @@ public sealed record InterviewScoringSettings
 
     public static InterviewScoringSettings CreateDefault() => new()
     {
+        SituationQuestionScoreCap = 0.20,
         PositiveSignals =
         [
             "built", "designed", "implemented", "improved", "optimized", "owned", "led",

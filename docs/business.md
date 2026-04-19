@@ -57,7 +57,10 @@ In practice, a planning run looks like this:
 - **Transparent reasoning** — every step the agent takes is visible in the response, so stakeholders can audit or challenge the plan.
 - **Configurable depth** — the `maxIterations` setting controls how many reasoning steps the agent is allowed to take, giving you a cost/quality trade-off knob.
 - **Staged hiring workflow** — supports HR-only screening first, explicit user approvals, role-based interview turns, interview scoring, per-candidate file folder, live Q&A logging, structured follow-up questions, clarification replies, candidate hints, and persisted HR notes.
-- **LLM-first interview system** — the hiring flow now asks the LLM to read the project brief, JD, and CV to start the session, then reuses the live markdown interview notes to generate each next question during the session. Keywords are treated only as weak initial context; the interview and scoring focus on how the candidate reasons, communicates, collaborates, and owns decisions. Candidate-facing prompts and evaluation notes also mirror the dominant language of the interview context when possible.
+- **LLM-first interview system** — the hiring flow now asks the LLM once to generate a technical interview question bank from the project brief, JD, and CV, then uses runtime prompts only for clarification, feedback, and follow-up control. For each hiring request, it first infers the current JD's stack priorities and gives extra weight to programming languages, frameworks, system design, databases, and agile/scrum methodology, then biases technical questions toward the candidate's demonstrated overlap with those exact priorities, with a smaller number of transferability questions for important but less-proven requirements. Candidate-facing prompts and evaluation notes also mirror the dominant language of the interview context when possible.
+- **Locked interview language** — before the main questions begin, the interviewer asks the candidate to choose English or Vietnamese. The rest of the interview then follows that one language consistently, including generated questions, fallback templates, clarification replies, and feedback turns.
+- **Interviewer feedback loop** — after each accepted candidate answer, the active interviewer adds a short feedback turn so the session feels like a real conversation instead of a one-way questionnaire. The tone is intentionally conversational and interviewer-like, rather than a visible evaluator note.
+- **Conversational interview guardrails** — when the candidate is not really answering yet and is instead asking for clarification, process details, or other side information, the interviewer replies naturally without scoring that turn as an answer. If this happens too many times on the same question, the interviewer gently redirects the conversation back to the active interview question.
 - **Quality harness** — a built-in scenario runner that validates all agent roles without requiring a live LLM. Produces JSON and Markdown reports in `harness-reports/` and is designed for use in CI pipelines. Trigger a run at any time via `POST /api/harness/run` or from the GitHub Actions CI workflow.
 
 ### Orchestrator — Full Team Simulation
@@ -166,6 +169,7 @@ In hiring mode, the orchestrator starts with `PM -> HR -> BA` and then appends `
 ```
 
 For a full process guide, see [docs/hiring-workflow.md](hiring-workflow.md).
+For a shorter stakeholder-facing version, see [docs/hiring-workflow-business-summary.md](hiring-workflow-business-summary.md).
 
 ### Interactive hiring interview
 
@@ -174,19 +178,20 @@ Use the dedicated hiring session API when you want the process to follow an appr
 The staged process is:
 
 1. HR screens the CV first using an LLM-based semantic fit assessment.
-2. If fit is above 40%, HR asks the user whether the CV may be forwarded to PM, BA, and one technical interviewer.
+2. If fit is above 40%, HR asks the user whether the CV may be forwarded to PM and one technical interviewer.
 3. PM prepares the interview schedule and can wait for approval, or proceed immediately when auto-approval is enabled.
 4. The interview starts with role introductions, then the candidate introduces themselves.
 5. The system resolves a seniority target (`JUNIOR`, `MID`, or `SENIOR`) from the request or the hiring materials so expectations stay consistent across the interview.
-7. PM covers project context and PM questions. After the session starts, each next interviewer question is generated from the live markdown notes for that session, so the system can reuse prior transcript context instead of resending the raw JD and CV on every turn. After each primary answer a follow-up question may be asked before the next role takes over.
-8. DEV or TEST covers technical questions with the same follow-up flow.
-9. BA covers scenario and behavior questions.
+7. PM opens with one question that anchors the interview in the candidate's real experience with the project stack.
+8. DEV or TEST then works through a one-shot technical question bank, with most questions aimed at the strongest overlap between the project's stack requirements and the candidate's proven experience.
+9. Follow-up questions are asked only when the candidate clearly understood the original question and answered it well enough to justify going deeper.
 10. If the candidate is stuck they may request a hint — the interviewer provides 2–3 short prompts without revealing the full answer.
 11. If the candidate asks a clarification question mid-interview, the interviewer replies and the same question remains active.
 12. HR records notes throughout the interview.
-13. A scoring agent updates the interview score using semantic LLM evaluation plus a configurable dimension rubric, and can end the session early when the score is too low. The score is based on demonstrated reasoning and role fit rather than keyword overlap, and is calibrated differently for junior, mid, and senior expectations. If semantic evaluation is unavailable, the system falls back conservatively instead of scoring the transcript with text heuristics.
-14. The panel closes with Q/A and HR writes the interview notes to a document file.
-15. A per-candidate folder (`candidate-{sessionId}/`) is created at session start with extracted JD keywords, CV keywords, and a live Q&A log that is updated in real-time throughout the interview.
+13. After each accepted answer, the active interviewer gives short feedback before the next question or follow-up, phrased like a real interviewer steering the conversation.
+14. A scoring agent updates the interview score using semantic LLM evaluation plus a configurable dimension rubric, and can end the session early when the score is too low. Each answer is scored individually first, then the session score is calculated from the running average, so weak answers are not hidden by earlier strong ones. The score is based on demonstrated reasoning and role fit rather than keyword overlap, is calibrated differently for junior, mid, and senior expectations, and limits situational or hypothetical answers to at most 20% of total evaluation weight. If semantic evaluation is unavailable, the system falls back conservatively to a latest-answer heuristic.
+15. The panel closes with Q/A and HR writes the interview notes to a document file.
+16. A per-candidate folder (`candidate-{sessionId}/`) is created at session start with extracted JD keywords, CV keywords, and a live Q&A log that is updated in real-time throughout the interview.
 
 This staged flow is exposed under `/api/hiring/sessions`.
 

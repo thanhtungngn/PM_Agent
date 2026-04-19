@@ -45,15 +45,9 @@ public sealed class HiringHarnessTests : IDisposable
                                             "questions": [
                                                 {
                                                     "speaker": "PM",
-                                                    "text": "Please introduce yourself and summarize the experience most relevant to this role.",
-                                                    "followUpText": null,
-                                                    "hintKeywords": ["experience", "role fit", "summary"]
-                                                },
-                                                {
-                                                    "speaker": "PM",
-                                                    "text": "Your CV shows API and database ownership. Where would you contribute first on this project?",
-                                                    "followUpText": "How would you reduce delivery risk in the first two weeks?",
-                                                    "hintKeywords": ["ownership", "risk reduction", "first impact"]
+                                                    "text": "Please introduce yourself through the parts of your experience that are most relevant to this project stack and role.",
+                                                    "followUpText": "Which parts of that experience map most directly to the project stack we just described?",
+                                                    "hintKeywords": ["project stack", "owned systems", "role fit"]
                                                 },
                                                 {
                                                     "speaker": "DEV",
@@ -62,9 +56,21 @@ public sealed class HiringHarnessTests : IDisposable
                                                     "hintKeywords": ["trade-offs", "architecture", "validation"]
                                                 },
                                                 {
+                                                    "speaker": "DEV",
+                                                    "text": "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["debugging", "signals", "evidence"]
+                                                },
+                                                {
+                                                    "speaker": "DEV",
+                                                    "text": "Given this project, which part of the stack would you inspect first in week one and what technical risks would you surface early?",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["risk", "stack priorities", "week one"]
+                                                },
+                                                {
                                                     "speaker": "BA",
                                                     "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?",
-                                                    "followUpText": "How would you document and communicate that scope change?",
+                                                    "followUpText": null,
                                                     "hintKeywords": ["impact", "stakeholders", "change log"]
                                                 },
                                                 {
@@ -97,28 +103,35 @@ public sealed class HiringHarnessTests : IDisposable
                 && userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
             {
                 return """
-                    { "speaker": "PM", "text": "Please introduce yourself and summarize the experience most relevant to this role.", "followUpText": null, "hintKeywords": ["experience", "role fit", "summary"] }
-                    """;
-            }
-
-            if (userPrompt.Contains("Requested speaker:\nPM", StringComparison.OrdinalIgnoreCase))
-            {
-                return """
-                    { "speaker": "PM", "text": "Your recent work shows API and database ownership. Where would you contribute first on this project?", "followUpText": "How would you reduce delivery risk in the first two weeks?", "hintKeywords": ["ownership", "risk reduction", "first impact"] }
+                    { "speaker": "PM", "text": "Please introduce yourself through the parts of your experience that are most relevant to this project stack and role.", "followUpText": "Which parts of that experience map most directly to the project stack we just described?", "hintKeywords": ["project stack", "owned systems", "role fit"] }
                     """;
             }
 
             if (userPrompt.Contains("Requested speaker:\nDEV", StringComparison.OrdinalIgnoreCase))
             {
+                if (userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "DEV", "text": "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                        """;
+                }
+
+                if (userPrompt.Contains("Question number for this speaker:\n2", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "DEV", "text": "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.", "followUpText": null, "hintKeywords": ["debugging", "signals", "evidence"] }
+                        """;
+                }
+
                 return """
-                    { "speaker": "DEV", "text": "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                    { "speaker": "DEV", "text": "Given this project, which part of the stack would you inspect first in week one and what technical risks would you surface early?", "followUpText": null, "hintKeywords": ["risk", "stack priorities", "week one"] }
                     """;
             }
 
             if (userPrompt.Contains("Requested speaker:\nBA", StringComparison.OrdinalIgnoreCase))
             {
                 return """
-                    { "speaker": "BA", "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?", "followUpText": "How would you document and communicate that scope change?", "hintKeywords": ["impact", "stakeholders", "change log"] }
+                    { "speaker": "BA", "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?", "followUpText": null, "hintKeywords": ["impact", "stakeholders", "change log"] }
                     """;
             }
 
@@ -153,17 +166,17 @@ public sealed class HiringHarnessTests : IDisposable
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "I am a backend engineer with six years of experience building .NET APIs for SaaS products and owning production releases."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "I would start with API boundaries, PostgreSQL schema design, and safe deployment foundations for the first release."));
-        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "In the first week I would focus on onboarding, stakeholder alignment, and a quick win that reduces delivery risk."));
+            "The most relevant part is owning ASP.NET Core APIs, PostgreSQL schema work, and Docker-based releases for production services."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "I chose a modular monolith with explicit API contracts, caching for hot reads, and tracing to validate performance trade-offs."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "With hindsight I would add observability earlier and define service-level objectives from the beginning."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "I would clarify stakeholder impact, estimate trade-offs, and document the decision before changing scope."));
+            "A tricky production issue involved a slow query path, and I narrowed it down with traces, query plans, and release diff checks before shipping the fix."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "I would update a change log, note owners, and send a summary of impact to the broader team."));
+            "In week one I would inspect API boundaries, data access hotspots, and deployment safety because those are the fastest places to surface technical risk."));
+        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
+            "I would clarify stakeholder impact, estimate trade-offs, and document the decision before changing scope."));
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "I would like to know how success is measured in the first 90 days and how releases are handled."));
 
@@ -185,16 +198,14 @@ public sealed class HiringHarnessTests : IDisposable
             "I am a backend engineer with six years of experience building .NET APIs."));
 
         Assert.Equal("PM", questionWithFollowUp.CurrentSpeaker);
-        Assert.True(questionWithFollowUp.FollowUpAvailable);
-        Assert.False(string.IsNullOrWhiteSpace(questionWithFollowUp.PendingFollowUp));
+        Assert.False(string.IsNullOrWhiteSpace(questionWithFollowUp.CurrentPrompt));
+        Assert.Contains("project stack", questionWithFollowUp.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
 
         var afterPrimaryAnswer = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "I would first own API boundaries and deployment safety for the first release."));
 
         Assert.Equal("interview_active", afterPrimaryAnswer.Stage);
-        Assert.Equal("PM", afterPrimaryAnswer.CurrentSpeaker);
-        Assert.False(afterPrimaryAnswer.FollowUpAvailable);
-        Assert.Equal(questionWithFollowUp.PendingFollowUp, afterPrimaryAnswer.CurrentPrompt);
+        Assert.Equal("DEV", afterPrimaryAnswer.CurrentSpeaker);
     }
 
     [Fact]
@@ -211,10 +222,23 @@ public sealed class HiringHarnessTests : IDisposable
 
         Assert.Equal("interview_active", hinted.Stage);
         Assert.Equal(originalSpeaker, hinted.CurrentSpeaker);
-        Assert.Contains("cues", hinted.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("prompts that might help", hinted.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
 
         var qaContent = await File.ReadAllTextAsync(Path.Combine(hinted.CandidateFolder, "interview-qa.md"));
         Assert.Contains("[HINT]", qaContent, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnswerFlow_WritesInterviewerFeedbackToQaLog()
+    {
+        var service = BuildService();
+        var started = await StartInterviewAsync(service);
+
+        var result = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
+            "I owned .NET APIs, PostgreSQL tuning, and Docker deployments in production."));
+
+        var qaContent = await File.ReadAllTextAsync(Path.Combine(result.CandidateFolder, "interview-qa.md"));
+        Assert.Contains("[FEEDBACK]", qaContent, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

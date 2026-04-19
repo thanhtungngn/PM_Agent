@@ -7,6 +7,7 @@ public interface IInterviewQuestionProvider
     Task<IReadOnlyList<InterviewQuestion>> BuildQuestionsAsync(
         HiringSessionStartRequest request,
         string technicalInterviewRole,
+        string interviewLanguage = "EN",
         CancellationToken cancellationToken = default);
 
     Task<InterviewQuestion> BuildQuestionFromNotesAsync(
@@ -23,5 +24,6 @@ public interface IInterviewQuestionProvider
         string speaker,
         string candidateQuestion,
         string sessionNotesPath,
+        string interviewLanguage = "EN",
         CancellationToken cancellationToken = default);
 }

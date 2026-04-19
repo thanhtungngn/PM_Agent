@@ -7,7 +7,7 @@ public sealed class RuleBasedAgentRoutingPolicy : IAgentRoutingPolicy
 {
     private static readonly string[] FullChain = ["PO", "PM", "HR", "BA", "DEV", "TEST"];
     private static readonly string[] HiringCoreRoute = ["PM", "HR", "BA"];
-    private static readonly string[] TechnicalInterviewRoleOrder = ["DEV", "TEST"];
+    private static readonly string[] TechnicalInterviewRoleOrder = ["DEV"];
 
     public IReadOnlyList<string> BuildInitialRoute(OrchestrationRequest request)
     {

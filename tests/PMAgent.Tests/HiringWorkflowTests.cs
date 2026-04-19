@@ -55,21 +55,21 @@ public sealed class HiringWorkflowTests : IDisposable
                                 var technicalFollowUp = technicalRole == "TEST"
                                     ? "What metrics would you track to prove release quality is improving?"
                                     : "What would you change now with more production hindsight?";
+                                var technicalQuestion2 = technicalRole == "TEST"
+                                    ? "Tell us about a release or regression issue you investigated on a real system and how you narrowed it down."
+                                    : "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.";
+                                var technicalQuestion3 = technicalRole == "TEST"
+                                    ? "For this project, which quality risks in the stack would you assess first and how would you make those risks visible early?"
+                                    : "Given this project, which part of the stack would you inspect first in week one and what technical risks would you surface early?";
 
                                 return Task.FromResult($$"""
                                         {
                                             "questions": [
                                                 {
                                                     "speaker": "PM",
-                                                    "text": "Please introduce yourself and summarize the experience most relevant to this role.",
-                                                    "followUpText": null,
-                                                    "hintKeywords": ["experience", "role fit", "summary"]
-                                                },
-                                                {
-                                                    "speaker": "PM",
-                                                    "text": "Your CV shows hands-on API and PostgreSQL ownership. Given this role, where would you expect to make the first impact?",
-                                                    "followUpText": "What would you prioritise in the first two weeks to reduce delivery risk?",
-                                                    "hintKeywords": ["ownership", "first impact", "risk reduction"]
+                                                    "text": "Please introduce yourself through the parts of your experience that are most relevant to this project stack and role.",
+                                                    "followUpText": "Which parts of that experience map most directly to the project stack we just described?",
+                                                    "hintKeywords": ["project stack", "owned systems", "role fit"]
                                                 },
                                                 {
                                                     "speaker": "{{technicalRole}}",
@@ -78,9 +78,21 @@ public sealed class HiringWorkflowTests : IDisposable
                                                     "hintKeywords": ["trade-offs", "architecture", "validation"]
                                                 },
                                                 {
+                                                    "speaker": "{{technicalRole}}",
+                                                    "text": "{{technicalQuestion2}}",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["debugging", "signals", "evidence"]
+                                                },
+                                                {
+                                                    "speaker": "{{technicalRole}}",
+                                                    "text": "{{technicalQuestion3}}",
+                                                    "followUpText": null,
+                                                    "hintKeywords": ["risk", "stack priorities", "week one"]
+                                                },
+                                                {
                                                     "speaker": "BA",
                                                     "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?",
-                                                    "followUpText": "How would you document and communicate that scope change?",
+                                                    "followUpText": null,
                                                     "hintKeywords": ["impact", "stakeholders", "change log"]
                                                 },
                                                 {
@@ -113,35 +125,56 @@ public sealed class HiringWorkflowTests : IDisposable
                 && userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
             {
                 return """
-                    { "speaker": "PM", "text": "Please introduce yourself and summarize the experience most relevant to this role.", "followUpText": null, "hintKeywords": ["experience", "role fit", "summary"] }
-                    """;
-            }
-
-            if (userPrompt.Contains("Requested speaker:\nPM", StringComparison.OrdinalIgnoreCase))
-            {
-                return """
-                    { "speaker": "PM", "text": "Your recent work shows hands-on API and PostgreSQL ownership. Given this role, where would you expect to make the first impact?", "followUpText": "What would you prioritise in the first two weeks to reduce delivery risk?", "hintKeywords": ["ownership", "first impact", "risk reduction"] }
+                    { "speaker": "PM", "text": "Please introduce yourself through the parts of your experience that are most relevant to this project stack and role.", "followUpText": "Which parts of that experience map most directly to the project stack we just described?", "hintKeywords": ["project stack", "owned systems", "role fit"] }
                     """;
             }
 
             if (userPrompt.Contains("Requested speaker:\nTEST", StringComparison.OrdinalIgnoreCase))
             {
+                if (userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "TEST", "text": "Walk us through how you would design a QA strategy for API, regression, and release confidence.", "followUpText": "What metrics would you track to prove release quality is improving?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                        """;
+                }
+
+                if (userPrompt.Contains("Question number for this speaker:\n2", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "TEST", "text": "Tell us about a release or regression issue you investigated on a real system and how you narrowed it down.", "followUpText": null, "hintKeywords": ["debugging", "signals", "evidence"] }
+                        """;
+                }
+
                 return """
-                    { "speaker": "TEST", "text": "Walk us through how you would design a QA strategy for API, regression, and release confidence.", "followUpText": "What metrics would you track to prove release quality is improving?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                    { "speaker": "TEST", "text": "For this project, which quality risks in the stack would you assess first and how would you make those risks visible early?", "followUpText": null, "hintKeywords": ["risk", "stack priorities", "week one"] }
                     """;
             }
 
             if (userPrompt.Contains("Requested speaker:\nDEV", StringComparison.OrdinalIgnoreCase))
             {
+                if (userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "DEV", "text": "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                        """;
+                }
+
+                if (userPrompt.Contains("Question number for this speaker:\n2", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                        { "speaker": "DEV", "text": "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.", "followUpText": null, "hintKeywords": ["debugging", "signals", "evidence"] }
+                        """;
+                }
+
                 return """
-                    { "speaker": "DEV", "text": "Walk us through a technical decision you made around API design, PostgreSQL performance, and deployment safety.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "architecture", "validation"] }
+                    { "speaker": "DEV", "text": "Given this project, which part of the stack would you inspect first in week one and what technical risks would you surface early?", "followUpText": null, "hintKeywords": ["risk", "stack priorities", "week one"] }
                     """;
             }
 
             if (userPrompt.Contains("Requested speaker:\nBA", StringComparison.OrdinalIgnoreCase))
             {
                 return """
-                    { "speaker": "BA", "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?", "followUpText": "How would you document and communicate that scope change?", "hintKeywords": ["impact", "stakeholders", "change log"] }
+                    { "speaker": "BA", "text": "If a stakeholder changes requirements late in the cycle, how would you clarify impact and align priorities?", "followUpText": null, "hintKeywords": ["impact", "stakeholders", "change log"] }
                     """;
             }
 
@@ -219,41 +252,39 @@ public sealed class HiringWorkflowTests : IDisposable
         // Q1: PM intro — triggers PM follow-up
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "Hello, I am a backend engineer with six years of experience building .NET APIs for SaaS products and owning production releases."));
-        // Q1 has no follow-up (Simple), so moves to Q2 PM
         Assert.Equal("PM", interview.CurrentSpeaker);
 
-        // Q2: PM project — answer triggers follow-up
+        // PM follow-up answer — moves to first technical round
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "I would start with the API and data model boundaries, then work with the team on PostgreSQL schema design and deployment safety for the first release."));
-        // Q2 has a follow-up; follow-up is now active
-        Assert.Equal("PM", interview.CurrentSpeaker);
-
-        // Q2 follow-up answer — moves to DEV
-        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "In the first week I would focus on quick wins and understanding the team delivery rhythm, then align on a 4-week milestone."));
+            "The most relevant part is building ASP.NET Core APIs, tuning PostgreSQL queries, and owning Docker-based releases for billing-related flows."));
         Assert.Equal("DEV", interview.CurrentSpeaker);
 
-        // Q3: DEV technical — answer triggers follow-up
+        // DEV technical round 1 — answer triggers technical follow-up
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "One key decision was choosing a modular monolith with clear API contracts, caching hot reads, and measuring performance with tracing before scaling out."));
         Assert.Equal("DEV", interview.CurrentSpeaker);
 
-        // Q3 follow-up answer — moves to BA
+        // DEV follow-up answer — moves to second technical round
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "With hindsight I would instrument observability earlier and define SLOs from day one."));
+        Assert.Equal("DEV", interview.CurrentSpeaker);
+
+        // DEV technical round 2 — moves to technical round 3
+        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
+            "A difficult production issue involved a slow query path under peak load, and I narrowed it down with traces, query plans, and release diff checks before shipping the fix."));
+        Assert.Equal("DEV", interview.CurrentSpeaker);
+
+        // DEV technical round 3 — moves to BA
+        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
+            "In week one I would inspect API boundaries, data access hotspots, and deployment safety first, because those are the fastest places to surface architectural and operational risk."));
         Assert.Equal("BA", interview.CurrentSpeaker);
 
-        // Q4: BA scenario — answer triggers follow-up
+        // BA scenario — moves to HR closing
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "If a stakeholder changes requirements late, I clarify impact, estimate the cost, align on priorities, and document the decision before changing scope."));
-        Assert.Equal("BA", interview.CurrentSpeaker);
-
-        // Q4 follow-up answer — moves to HR closing
-        interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
-            "I would write a change-log entry, update the RACI, and send a summary to the team."));
         Assert.Equal("HR", interview.CurrentSpeaker);
 
-        // Q5: HR closing Q&A — completes the interview
+        // HR closing Q&A — completes the interview
         interview = await service.SubmitCandidateResponseAsync(started.SessionId, new HiringCandidateResponseRequest(
             "My main question is how success is measured in the first 90 days and how the team handles production incidents during release week."));
 
@@ -295,7 +326,7 @@ public sealed class HiringWorkflowTests : IDisposable
         var hintResult = await service.RequestHintAsync(started.SessionId);
 
         Assert.Equal("interview_active", hintResult.Stage);
-        Assert.Contains("cues", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("prompts that might help", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -315,7 +346,7 @@ public sealed class HiringWorkflowTests : IDisposable
             new HiringCandidateResponseRequest("bạn có thể cho tôi 1 gợi ý được không?"));
 
         Assert.Equal("interview_active", hintResult.Stage);
-        Assert.Contains("Bạn có thể", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("gợi ý", hintResult.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -337,6 +368,53 @@ public sealed class HiringWorkflowTests : IDisposable
         Assert.Equal("interview_active", clarified.Stage);
         Assert.Equal("PM", clarified.CurrentSpeaker);
         Assert.Contains("clarifying", clarified.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(clarified.Transcript, turn => string.Equals(turn.Speaker, "EVAL", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task CandidateProcessQuestion_IsHandledAsInterviewRequest_NotAsAnswer()
+    {
+        var service = BuildService();
+        var started = await service.StartAsync(new HiringSessionStartRequest(
+            "Hire a backend engineer for a SaaS billing platform",
+            "Need C#, ASP.NET Core, PostgreSQL, Docker, and API design experience.",
+            "Built C# ASP.NET Core APIs, tuned PostgreSQL, deployed Docker workloads."));
+
+        await service.ApproveScreeningAsync(started.SessionId, new HiringApprovalRequest(true));
+
+        var result = await service.SubmitCandidateResponseAsync(
+            started.SessionId,
+            new HiringCandidateResponseRequest("Before I answer, could you tell me how the backend team usually works with PM?"));
+
+        Assert.Equal("interview_active", result.Stage);
+        Assert.Equal("PM", result.CurrentSpeaker);
+        Assert.Contains("clarifying", result.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(result.Transcript, turn => string.Equals(turn.Speaker, "EVAL", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RepeatedCandidateRequests_TriggersFocusReminderBackToActiveQuestion()
+    {
+        var service = BuildService();
+        var started = await service.StartAsync(new HiringSessionStartRequest(
+            "Hire a backend engineer for a SaaS billing platform",
+            "Need C#, ASP.NET Core, PostgreSQL, Docker, and API design experience.",
+            "Built C# ASP.NET Core APIs, tuned PostgreSQL, deployed Docker workloads."));
+
+        await service.ApproveScreeningAsync(started.SessionId, new HiringApprovalRequest(true));
+
+        await service.SubmitCandidateResponseAsync(
+            started.SessionId,
+            new HiringCandidateResponseRequest("Could you clarify what you mean by 'relevant to this role'?"));
+
+        var redirected = await service.SubmitCandidateResponseAsync(
+            started.SessionId,
+            new HiringCandidateResponseRequest("Before I answer, can I also ask how success is measured in this role?"));
+
+        Assert.Equal("interview_active", redirected.Stage);
+        Assert.Equal("PM", redirected.CurrentSpeaker);
+        Assert.Contains("come back to the main question", redirected.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Please introduce yourself", redirected.CurrentPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -382,6 +460,7 @@ public sealed class HiringWorkflowTests : IDisposable
         var qaContent = await File.ReadAllTextAsync(qaPath);
         Assert.Contains("PM", qaContent);
         Assert.Contains("CANDIDATE", qaContent);
+        Assert.Contains("[FEEDBACK]", qaContent, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

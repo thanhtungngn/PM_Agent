@@ -149,6 +149,7 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
             [Hiring Workflow Context]
             Workflow: hiring
             Requested technical interview roles: {technicalRoles}
+            Temporary rule: ignore TEST interview support for now and continue without that branch.
 
             Job Description:
             {request.JobDescription}
@@ -160,7 +161,8 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
             1. Read the CV and extract broad evidence plus supporting keywords as initial context only.
             2. Check candidate fit against the job description using overall role alignment, not keyword overlap alone.
             3. Plan and execute the interview process.
-            4. If DEV or TEST is requested, generate interview questions and scorecards that evaluate the candidate holistically in that role.
+            4. If DEV is requested, generate interview questions and scorecards that evaluate the candidate holistically in that role.
+            5. If TEST is requested, ignore it for now.
             """;
 
         return string.IsNullOrWhiteSpace(request.Context)

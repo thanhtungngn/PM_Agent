@@ -68,7 +68,7 @@ const presets = {
         jobDescription: "Need API testing, Playwright, CI pipelines, exploratory testing, and defect triage experience.",
         candidateCv: "Candidate has Playwright, Postman, REST API automation, Azure DevOps pipelines, and regression leadership.",
         targetSeniority: "MID",
-        technicalInterviewRole: "TEST",
+        technicalInterviewRole: "DEV",
         autoApproveInterviewSchedule: true
     }
 };
@@ -284,7 +284,7 @@ function splitTableRow(line) {
 }
 
 function getTechnicalInterviewRoles() {
-    return [elements.technicalInterviewRole.value];
+    return ["DEV"];
 }
 
 function getFormState() {
@@ -357,9 +357,8 @@ function restoreFormState() {
         const legacyTechnicalRoles = Array.isArray(formState.technicalInterviewRoles)
             ? formState.technicalInterviewRoles
             : [];
-        elements.technicalInterviewRole.value = formState.technicalInterviewRole
-            || legacyTechnicalRoles[0]
-            || "DEV";
+        const requestedTechnicalRole = formState.technicalInterviewRole || legacyTechnicalRoles[0] || "DEV";
+        elements.technicalInterviewRole.value = requestedTechnicalRole === "TEST" ? "DEV" : requestedTechnicalRole;
         elements.autoApproveInterviewSchedule.checked = formState.autoApproveInterviewSchedule ?? true;
         elements.prompt.value = formState.prompt || "";
     }

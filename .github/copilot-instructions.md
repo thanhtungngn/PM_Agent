@@ -42,3 +42,9 @@ These rules apply to every AI-assisted code change in this repository.
 - All new public types in `PMAgent.Application` must be `sealed record` unless a class hierarchy is explicitly required.
 - Every new feature must have at least one xUnit test in `PMAgent.Tests`.
 - Do not add implementation logic to `PMAgent.Application` — it must remain a pure contracts/models layer.
+
+## Temporary Testing Note
+
+- During the current high-change period, do not run unit tests or harness tests by default.
+- Only run `unit test` or `harness test` flows when the user explicitly asks for them.
+- It is still acceptable to mention that verification was intentionally skipped because of this temporary rule.

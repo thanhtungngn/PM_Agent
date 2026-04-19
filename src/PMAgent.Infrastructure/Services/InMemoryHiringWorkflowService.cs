@@ -14,7 +14,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
     private const string CompletedStage = "completed";
     private const string RejectedStage = "rejected";
 
-    private static readonly string[] SupportedTechnicalRoles = ["DEV", "TEST"];
+    private static readonly string[] SupportedTechnicalRoles = ["DEV"];
     private static readonly ConcurrentDictionary<Guid, HiringSessionState> Sessions = new();
 
     private readonly IHiringFitScoringAgent _fitScoringAgent;
@@ -89,7 +89,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         state.RequiresUserApproval = true;
         state.ApprovalType = "screening_forward";
         state.CurrentSpeaker = "HR";
-        state.CurrentPrompt = $"The CV fit score is {state.ScreeningFitScore:F1}%. Do you approve forwarding this CV to PM, BA, and {technicalRole}?";
+        state.CurrentPrompt = $"The CV fit score is {state.ScreeningFitScore:F1}%. Do you approve forwarding this CV to PM and {technicalRole}?";
         state.StatusSummary = "HR screening passed. Waiting for user approval to forward the CV.";
 
         Sessions[state.SessionId] = state;
@@ -120,7 +120,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         }
 
         state.Participants.Clear();
-        state.Participants.AddRange(["HR", "PM", "BA", state.TechnicalInterviewRole]);
+        state.Participants.AddRange(["HR", "PM", state.TechnicalInterviewRole]);
 
         var schedulingMessage = BuildSchedulingMessage(state);
         AddTurn(state, "PM", schedulingMessage);
@@ -182,40 +182,25 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
 
         var message = request.Message.Trim();
 
-        state.ConversationLanguage = HiringConversationLanguageResolver.ResolveUpdatedLanguage(state.ConversationLanguage, message);
+        if (!state.InterviewLanguageLocked)
+            state.ConversationLanguage = HiringConversationLanguageResolver.ResolveUpdatedLanguage(state.ConversationLanguage, message);
+
+        if (state.AwaitingLanguageSelection)
+            return await HandleLanguageSelectionAsync(state, message, cancellationToken);
 
         // If the candidate is requesting a hint through the flag or natural language, redirect to hint logic
         if (request.IsHintRequest || IsHintRequestMessage(message))
             return await RequestHintAsync(sessionId, cancellationToken);
 
-        // Detect question or clarification from the candidate and answer conversationally.
-        if (IsClarificationOrQuestion(message))
+        // Detect non-answer requests from the candidate and keep the session conversational.
+        if (IsCandidateInterviewRequest(message))
         {
-            state.WaitingForClarificationAnswer = true;
-            state.PendingClarificationFrom = state.CurrentSpeaker;
-            AddTurn(state, "CANDIDATE", message);
-            AppendQaEntry(state, "CANDIDATE", message);
-            WriteNotesFile(state);
-
-            var interviewerReply = await _questionProvider.BuildInterviewerReplyFromNotesAsync(
-                state.Request,
-                state.TechnicalInterviewRole,
-                state.CurrentSpeaker,
-                message,
-                state.NotesDocumentPath,
-                cancellationToken);
-
-            state.CurrentPrompt = interviewerReply;
-            AddTurn(state, state.CurrentSpeaker, interviewerReply);
-            AppendQaEntry(state, state.CurrentSpeaker, interviewerReply);
-            state.WaitingForClarificationAnswer = false;
-
-            state.StatusSummary = BuildClarificationStatusSummary(state.ConversationLanguage);
-            return ToResult(state);
+            return await HandleCandidateInterviewRequestAsync(state, message, cancellationToken);
         }
 
         // Candidate answered — record it
         state.WaitingForClarificationAnswer = false;
+        state.CandidateRequestCountForCurrentQuestion = 0;
         AddTurn(state, "CANDIDATE", message);
         state.CandidateResponseCount++;
         AppendQaEntry(state, "CANDIDATE", message);
@@ -231,8 +216,12 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             state.CandidateResponseCount,
             cancellationToken);
 
-        state.InterviewScore = score.Score;
-        AddTurn(state, "EVAL", BuildEvaluationSummary(score));
+        state.AnswerScores.Add(score.Score);
+        state.InterviewScore = state.AnswerScores.Average();
+        AddTurn(state, "EVAL", BuildEvaluationSummary(score, state.InterviewScore));
+        var interviewerFeedback = BuildInterviewerFeedback(state, score);
+        AddTurn(state, state.CurrentSpeaker, interviewerFeedback);
+        AppendQaEntry(state, state.CurrentSpeaker, $"[FEEDBACK] {interviewerFeedback}");
 
         if (score.ShouldStop && state.CandidateResponseCount >= _settings.Scoring.MinimumResponsesBeforeStop)
         {
@@ -241,7 +230,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         }
 
         // Offer follow-up if the active question has one and it has not been asked yet
-        if (state.ActiveQuestion?.FollowUpText is { } followUp && !state.FollowUpAsked)
+        if (state.ActiveQuestion?.FollowUpText is { } followUp && !state.FollowUpAsked && score.ShouldAskFollowUp)
         {
             state.FollowUpAsked = true;
             state.HintCountForCurrentQuestion = 0;
@@ -253,7 +242,7 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         }
 
         // Move to next question or close
-        if (state.PendingQuestionPlan.Count == 0)
+        if (state.PendingQuestions.Count == 0)
         {
             CompleteInterview(state, "Interview objectives have been covered. Moving to Q/A and closing.");
             return ToResult(state);
@@ -395,9 +384,11 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         return $"""
             PM scheduling summary
 
-            - Panel: PM, HR, BA, {state.TechnicalInterviewRole}
+            - Panel: PM, HR, {state.TechnicalInterviewRole}
             - Seniority target: {state.SeniorityLevel}
-            - Flow: introductions -> candidate introduction -> PM project overview -> technical questions -> BA scenario -> Q/A -> closing
+            - Flow: introductions -> language selection -> one-shot question bank generation -> technical interview rounds -> Q/A -> closing
+            - Follow-up policy: only ask follow-up questions when the candidate shows solid understanding and provides a good initial answer.
+            - Scoring policy: each answer is scored individually, and the session score is the running average of those answer scores.
             - Default behavior: interview can start immediately unless the user wants to pause for schedule approval.
             - Required approval: confirm whether PM should proceed to the interview stage.
             """;
@@ -412,22 +403,20 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         AddTurn(state, "HR", BuildPanelIntroduction(state, "HR"));
         AddTurn(state, "PM", BuildPanelIntroduction(state, "PM"));
         AddTurn(state, state.TechnicalInterviewRole, BuildPanelIntroduction(state, state.TechnicalInterviewRole));
-        AddTurn(state, "BA", BuildPanelIntroduction(state, "BA"));
 
-        state.PendingQuestionPlan.Clear();
-        for (var index = 1; index <= _settings.GeneralQuestionCount; index++)
-            state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("PM", index));
-
-        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion(state.TechnicalInterviewRole, 1));
-        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("BA", 1));
-        state.PendingQuestionPlan.Enqueue(new PlannedInterviewQuestion("HR", 1));
-
-        await MoveToNextQuestionAsync(state, cancellationToken);
+        state.PendingQuestions.Clear();
+        state.AwaitingLanguageSelection = true;
+        state.InterviewLanguageLocked = false;
+        state.CurrentSpeaker = "HR";
+        state.CurrentPrompt = BuildLanguageSelectionPrompt();
+        AddTurn(state, "HR", state.CurrentPrompt);
+        AppendQaEntry(state, "HR", state.CurrentPrompt);
     }
 
-    private static string BuildEvaluationSummary(InterviewScoreResult score)
+    private static string BuildEvaluationSummary(InterviewScoreResult score, double aggregateScore)
     {
         var builder = new StringBuilder();
+        builder.Append($"Answer score: {score.Score:F1}. Session score: {aggregateScore:F1}. ");
         builder.Append(score.Rationale);
 
         if (score.Dimensions is { Count: > 0 })
@@ -439,27 +428,126 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         return builder.ToString();
     }
 
+    private static string BuildInterviewerFeedback(HiringSessionState state, InterviewScoreResult score)
+    {
+        if (!string.IsNullOrWhiteSpace(score.Feedback))
+            return score.Feedback.Trim();
+
+        return IsVietnamese(state)
+            ? "Cảm ơn bạn. Ở câu tiếp theo, bạn cứ bám vào một ví dụ thật và nói rõ phần bạn trực tiếp làm nhé."
+            : "Thanks. In the next answer, please stay with one real example and be explicit about what you directly handled.";
+    }
+
     private static string BuildHrInterviewNote(HiringSessionState state, string candidateMessage)
     {
         var shortened = candidateMessage.Length <= 180 ? candidateMessage : $"{candidateMessage[..177]}...";
         return $"HR note: candidate response #{state.CandidateResponseCount} - {shortened}";
     }
 
-    private static bool IsClarificationOrQuestion(string message)
+    private async Task<HiringSessionResult> HandleCandidateInterviewRequestAsync(
+        HiringSessionState state,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        state.WaitingForClarificationAnswer = true;
+        state.PendingClarificationFrom = state.CurrentSpeaker;
+        state.CandidateRequestCountForCurrentQuestion++;
+        AddTurn(state, "CANDIDATE", message);
+        AppendQaEntry(state, "CANDIDATE", message);
+        WriteNotesFile(state);
+
+        var interviewerReply = await _questionProvider.BuildInterviewerReplyFromNotesAsync(
+            state.Request,
+            state.TechnicalInterviewRole,
+            state.CurrentSpeaker,
+            message,
+            state.NotesDocumentPath,
+            state.ConversationLanguage,
+            cancellationToken);
+
+        if (state.CandidateRequestCountForCurrentQuestion >= _settings.MaxCandidateRequestsPerQuestion)
+            interviewerReply = AppendFocusReminder(state, interviewerReply);
+
+        state.CurrentPrompt = interviewerReply;
+        AddTurn(state, state.CurrentSpeaker, interviewerReply);
+        AppendQaEntry(state, state.CurrentSpeaker, interviewerReply);
+        state.WaitingForClarificationAnswer = false;
+        state.StatusSummary = BuildClarificationStatusSummary(
+            state.ConversationLanguage,
+            state.CandidateRequestCountForCurrentQuestion >= _settings.MaxCandidateRequestsPerQuestion);
+        return ToResult(state);
+    }
+
+    private async Task<HiringSessionResult> HandleLanguageSelectionAsync(
+        HiringSessionState state,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        AddTurn(state, "CANDIDATE", message);
+        AppendQaEntry(state, "CANDIDATE", message);
+
+        state.ConversationLanguage = HiringConversationLanguageResolver.ResolveInterviewLanguageChoice(message, state.ConversationLanguage);
+        state.InterviewLanguageLocked = true;
+        state.AwaitingLanguageSelection = false;
+
+        var acknowledgement = BuildLanguageSelectionAcknowledgement(state);
+        AddTurn(state, "HR", acknowledgement);
+        AppendQaEntry(state, "HR", acknowledgement);
+
+        state.PendingQuestions.Clear();
+        var questionBank = await _questionProvider.BuildQuestionsAsync(
+            state.Request,
+            state.TechnicalInterviewRole,
+            state.ConversationLanguage,
+            cancellationToken);
+        foreach (var question in questionBank)
+            state.PendingQuestions.Enqueue(question);
+
+        await MoveToNextQuestionAsync(state, cancellationToken);
+        state.StatusSummary = string.Equals(state.ConversationLanguage, "VI", StringComparison.OrdinalIgnoreCase)
+            ? "Đã chốt ngôn ngữ phỏng vấn và bắt đầu vào câu hỏi chính."
+            : "Interview language locked and the main interview questions have started.";
+        return ToResult(state);
+    }
+
+    private static bool IsCandidateInterviewRequest(string message)
     {
         var lower = message.Trim().ToLowerInvariant();
         return lower.EndsWith('?')
+            || lower.StartsWith("before i answer")
+            || lower.StartsWith("before answering")
+            || lower.StartsWith("can i ask")
+            || lower.StartsWith("could i ask")
+            || lower.StartsWith("i have a question")
+            || lower.StartsWith("one question")
+            || lower.StartsWith("quick question")
             || lower.Contains("what do you mean")
             || lower.Contains("could you clarify")
             || lower.Contains("can you explain")
             || lower.Contains("do you mean")
             || lower.Contains("what is meant by")
+            || lower.Contains("before i answer")
+            || lower.Contains("before answering")
+            || lower.Contains("can i ask")
+            || lower.Contains("could i ask")
+            || lower.Contains("i have a question")
+            || lower.Contains("tell me about the team")
+            || lower.Contains("interview process")
+            || lower.Contains("salary")
             || lower.StartsWith("does that mean")
             || lower.Contains("nghĩa là gì")
             || lower.Contains("làm rõ")
             || lower.Contains("giải thích")
             || lower.Contains("đây là câu hỏi")
             || lower.Contains("day la cau hoi")
+            || lower.Contains("trước khi trả lời")
+            || lower.Contains("truoc khi tra loi")
+            || lower.Contains("cho tôi hỏi")
+            || lower.Contains("cho toi hoi")
+            || lower.Contains("em có câu hỏi")
+            || lower.Contains("em co cau hoi")
+            || lower.Contains("mình có câu hỏi")
+            || lower.Contains("minh co cau hoi")
             || lower.Contains("bạn có thể")
             || lower.Contains("ban co the");
     }
@@ -476,10 +564,53 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
             || lower.Contains("need a hint");
     }
 
-    private static string BuildClarificationStatusSummary(string language) =>
+    private static string BuildClarificationStatusSummary(string language, bool redirectedToQuestion) =>
         string.Equals(language, "VI", StringComparison.OrdinalIgnoreCase)
-            ? "Interviewer đã phản hồi câu hỏi của ứng viên. Bạn có thể tiếp tục trả lời."
-            : "Interviewer answered the candidate's question. Please continue with your answer.";
+            ? redirectedToQuestion
+                ? "Interviewer đã phản hồi ngắn gọn và yêu cầu ứng viên quay lại câu hỏi đang phỏng vấn."
+                : "Interviewer đã phản hồi câu hỏi của ứng viên. Bạn có thể tiếp tục trả lời."
+            : redirectedToQuestion
+                ? "Interviewer answered briefly and asked the candidate to refocus on the active interview question."
+                : "Interviewer answered the candidate's question. Please continue with your answer.";
+
+    private static string BuildLanguageSelectionPrompt()
+    {
+        return "Before we start the interview, would you like to continue in English or Vietnamese? / Trước khi bắt đầu, bạn muốn phỏng vấn bằng tiếng Anh hay tiếng Việt?";
+    }
+
+    private static string BuildLanguageSelectionAcknowledgement(HiringSessionState state)
+    {
+        return string.Equals(state.ConversationLanguage, "VI", StringComparison.OrdinalIgnoreCase)
+            ? "Cảm ơn bạn. Mình sẽ tiếp tục buổi phỏng vấn hoàn toàn bằng tiếng Việt từ đây."
+            : "Thank you. We will continue the interview entirely in English from here.";
+    }
+
+    private static string AppendFocusReminder(HiringSessionState state, string interviewerReply)
+    {
+        var reminder = BuildFocusReminder(state);
+        return string.IsNullOrWhiteSpace(interviewerReply)
+            ? reminder
+            : $"{interviewerReply} {reminder}";
+    }
+
+    private static string BuildFocusReminder(HiringSessionState state)
+    {
+        var activeQuestion = GetActiveInterviewQuestionText(state);
+        return IsVietnamese(state)
+            ? $"Mình muốn giữ nhịp buổi phỏng vấn, nên bây giờ quay lại câu hỏi chính nhé: {activeQuestion}"
+            : $"I want to keep the interview focused, so let's come back to the main question now: {activeQuestion}";
+    }
+
+    private static string GetActiveInterviewQuestionText(HiringSessionState state)
+    {
+        if (state.ActiveQuestion is null)
+            return state.CurrentPrompt;
+
+        if (state.FollowUpAsked && !string.IsNullOrWhiteSpace(state.ActiveQuestion.FollowUpText))
+            return state.ActiveQuestion.FollowUpText!;
+
+        return state.ActiveQuestion.Text;
+    }
 
     private static string BuildPanelIntroduction(HiringSessionState state, string speaker)
     {
@@ -509,19 +640,17 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
     {
         WriteNotesFile(state);
 
-        var planned = state.PendingQuestionPlan.Dequeue();
-        var question = await _questionProvider.BuildQuestionFromNotesAsync(
-            state.Request,
-            state.TechnicalInterviewRole,
-            planned.Speaker,
-            planned.QuestionNumber,
-            state.NotesDocumentPath,
-            cancellationToken);
+        if (state.PendingQuestions.Count == 0)
+            return;
+
+        var question = state.PendingQuestions.Dequeue();
 
         state.ActiveQuestion = question;
         state.FollowUpAsked = false;
         state.HintCountForCurrentQuestion = 0;
+        state.CandidateRequestCountForCurrentQuestion = 0;
         state.WaitingForClarificationAnswer = false;
+        state.AwaitingLanguageSelection = false;
         state.CurrentSpeaker = question.Speaker;
         state.CurrentPrompt = question.Text;
         AddTurn(state, question.Speaker, question.Text);
@@ -754,16 +883,18 @@ public sealed class InMemoryHiringWorkflowService : IHiringWorkflowService
         public string CandidateFolder { get; set; } = string.Empty;
         public string QaFilePath { get; set; } = string.Empty;
         public int CandidateResponseCount { get; set; }
+        public List<double> AnswerScores { get; } = [];
         public List<string> Participants { get; } = [];
         public List<HiringTranscriptTurn> Transcript { get; } = [];
-        public Queue<PlannedInterviewQuestion> PendingQuestionPlan { get; } = new();
+        public Queue<InterviewQuestion> PendingQuestions { get; } = new();
         // Follow-up tracking for the active question
         public InterviewQuestion? ActiveQuestion { get; set; }
         public bool FollowUpAsked { get; set; }
         public int HintCountForCurrentQuestion { get; set; }
+        public int CandidateRequestCountForCurrentQuestion { get; set; }
+        public bool AwaitingLanguageSelection { get; set; }
+        public bool InterviewLanguageLocked { get; set; }
         public bool WaitingForClarificationAnswer { get; set; }
         public string? PendingClarificationFrom { get; set; }
     }
-
-    private sealed record PlannedInterviewQuestion(string Speaker, int QuestionNumber);
 }

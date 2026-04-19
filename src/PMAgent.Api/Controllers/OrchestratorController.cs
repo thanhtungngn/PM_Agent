@@ -42,7 +42,21 @@ public sealed class OrchestratorController(IOrchestratorAgent orchestrator) : Co
             return BadRequest("TechnicalInterviewRoles only supports DEV and TEST.");
         }
 
-        var result = await orchestrator.RunAsync(request, cancellationToken);
+        var normalizedRequest = NormalizeOrchestrationRequest(request);
+        var result = await orchestrator.RunAsync(normalizedRequest, cancellationToken);
         return Ok(result);
+    }
+
+    private static OrchestrationRequest NormalizeOrchestrationRequest(OrchestrationRequest request)
+    {
+        if (!string.Equals(request.Workflow, "hiring", StringComparison.OrdinalIgnoreCase))
+            return request;
+
+        var normalizedRoles = request.TechnicalInterviewRoles?
+            .Where(role => !string.Equals(role, "TEST", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return request with { TechnicalInterviewRoles = normalizedRoles };
     }
 }

@@ -2,6 +2,34 @@ namespace PMAgent.Infrastructure.Services;
 
 internal static class HiringConversationLanguageResolver
 {
+    public static string ResolveInterviewLanguageChoice(string candidateMessage, string fallbackLanguage = "EN")
+    {
+        if (string.IsNullOrWhiteSpace(candidateMessage))
+            return fallbackLanguage;
+
+        var lower = candidateMessage.Trim().ToLowerInvariant();
+
+        if (lower.Contains("english", StringComparison.Ordinal)
+            || lower.Contains("speak english", StringComparison.Ordinal)
+            || lower.Contains("in english", StringComparison.Ordinal))
+            return "EN";
+
+        if (lower.Contains("tiếng việt", StringComparison.Ordinal)
+            || lower.Contains("tieng viet", StringComparison.Ordinal)
+            || lower.Contains("nói tiếng việt", StringComparison.Ordinal)
+            || lower.Contains("noi tieng viet", StringComparison.Ordinal)
+            || lower.Contains("bằng tiếng việt", StringComparison.Ordinal)
+            || lower.Contains("bang tieng viet", StringComparison.Ordinal))
+            return "VI";
+
+        return DetectLanguage(candidateMessage) switch
+        {
+            "VI" => "VI",
+            "EN" => "EN",
+            _ => fallbackLanguage
+        };
+    }
+
     public static string ResolveInitialLanguage(params string[] texts)
     {
         var combined = string.Join("\n", texts.Where(text => !string.IsNullOrWhiteSpace(text)));

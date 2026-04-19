@@ -13,7 +13,8 @@ public sealed class InterviewSystemTests
     {
         var settings = HiringWorkflowSettings.CreateDefault() with
         {
-            GeneralQuestionCount = 2
+            GeneralQuestionCount = 1,
+            TechnicalQuestionCount = 3
         };
 
         var provider = new ConfigurableInterviewQuestionProvider(new FakeInterviewLlmClient(), settings);
@@ -25,13 +26,15 @@ public sealed class InterviewSystemTests
                 TechnicalInterviewRole: "DEV"),
             "DEV");
 
-        Assert.Equal(5, questions.Count);
+        Assert.Equal(6, questions.Count);
         Assert.Contains("Rebuild checkout service", questions[0].Text);
+        Assert.Equal("DEV", questions[1].Speaker);
         Assert.Equal("DEV", questions[2].Speaker);
-        Assert.Contains("postgresql", questions[2].Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("BA", questions[3].Speaker);
-        Assert.Equal("HR", questions[4].Speaker);
-        Assert.False(string.IsNullOrWhiteSpace(questions[2].FollowUpText));
+        Assert.Equal("DEV", questions[3].Speaker);
+        Assert.Contains("postgresql", questions[1].Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("BA", questions[4].Speaker);
+        Assert.Equal("HR", questions[5].Speaker);
+        Assert.False(string.IsNullOrWhiteSpace(questions[1].FollowUpText));
     }
 
     [Fact]
@@ -53,6 +56,7 @@ public sealed class InterviewSystemTests
         Assert.Contains("not as a keyword checklist", llm.LastSystemPrompt, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Match the dominant language", llm.LastSystemPrompt, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Level: SENIOR", llm.LastSystemPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("at most 20%", llm.LastSystemPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -215,26 +219,32 @@ public sealed class InterviewSystemTests
                         "questions": [
                             {
                                 "speaker": "PM",
-                                "text": "Project: Rebuild checkout service. Please introduce yourself and summarize the experience most relevant to this role.",
-                                "followUpText": null,
-                                "hintKeywords": ["experience", "role fit", "summary"]
-                            },
-                            {
-                                "speaker": "PM",
-                                "text": "Your CV shows backend API and PostgreSQL ownership. Where would you contribute first on Rebuild checkout service?",
-                                "followUpText": "What would be your first milestone for reducing delivery risk?",
-                                "hintKeywords": ["ownership", "milestone", "risk reduction"]
+                                "text": "Project: Rebuild checkout service. Please introduce yourself through the experience most relevant to this stack.",
+                                "followUpText": "Which part of that experience maps most directly to this project's APIs and PostgreSQL workload?",
+                                "hintKeywords": ["project stack", "role fit", "owned systems"]
                             },
                             {
                                 "speaker": "DEV",
                                 "text": "Walk us through a technical decision you made around PostgreSQL performance and API design trade-offs.",
-                                "followUpText": "What would you change now with more production hindsight?",
+                                "followUpText": "How did you verify that the trade-off was the right one in production?",
                                 "hintKeywords": ["trade-offs", "postgresql", "performance"]
+                            },
+                            {
+                                "speaker": "DEV",
+                                "text": "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.",
+                                "followUpText": null,
+                                "hintKeywords": ["debugging", "deployment", "signals"]
+                            },
+                            {
+                                "speaker": "DEV",
+                                "text": "For Rebuild checkout service, which part of the stack would you inspect first in week one and what technical risks would you surface early?",
+                                "followUpText": null,
+                                "hintKeywords": ["week one", "risk", "stack priorities"]
                             },
                             {
                                 "speaker": "BA",
                                 "text": "How would you handle a late requirement change that affects the checkout flow and multiple stakeholders?",
-                                "followUpText": "How would you document and communicate that impact?",
+                                "followUpText": null,
                                 "hintKeywords": ["impact", "stakeholders", "decision log"]
                             },
                             {
@@ -275,28 +285,35 @@ public sealed class InterviewSystemTests
                         && userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
                     {
                         return """
-                            { "speaker": "PM", "text": "Project: Rebuild checkout service. Please introduce yourself and summarize the experience most relevant to this role.", "followUpText": null, "hintKeywords": ["experience", "role fit", "summary"] }
-                            """;
-                    }
-
-                    if (userPrompt.Contains("Requested speaker:\nPM", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return """
-                            { "speaker": "PM", "text": "Your recent work suggests backend API and PostgreSQL ownership. Where would you contribute first on Rebuild checkout service?", "followUpText": "What would be your first milestone for reducing delivery risk?", "hintKeywords": ["ownership", "milestone", "risk reduction"] }
+                            { "speaker": "PM", "text": "Project: Rebuild checkout service. Please introduce yourself through the experience most relevant to this stack.", "followUpText": "Which part of that experience maps most directly to this project's APIs and PostgreSQL workload?", "hintKeywords": ["project stack", "role fit", "owned systems"] }
                             """;
                     }
 
                     if (userPrompt.Contains("Requested speaker:\nDEV", StringComparison.OrdinalIgnoreCase))
                     {
+                        if (userPrompt.Contains("Question number for this speaker:\n1", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return """
+                                { "speaker": "DEV", "text": "Walk us through a technical decision you made around PostgreSQL performance and API design trade-offs.", "followUpText": "How did you verify that the trade-off was the right one in production?", "hintKeywords": ["trade-offs", "postgresql", "performance"] }
+                                """;
+                        }
+
+                        if (userPrompt.Contains("Question number for this speaker:\n2", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return """
+                                { "speaker": "DEV", "text": "Tell us about a production debugging or deployment issue you handled on a backend service and how you narrowed it down.", "followUpText": null, "hintKeywords": ["debugging", "deployment", "signals"] }
+                                """;
+                        }
+
                         return """
-                            { "speaker": "DEV", "text": "Walk us through a technical decision you made around PostgreSQL performance and API design trade-offs.", "followUpText": "What would you change now with more production hindsight?", "hintKeywords": ["trade-offs", "postgresql", "performance"] }
+                            { "speaker": "DEV", "text": "For Rebuild checkout service, which part of the stack would you inspect first in week one and what technical risks would you surface early?", "followUpText": null, "hintKeywords": ["week one", "risk", "stack priorities"] }
                             """;
                     }
 
                     if (userPrompt.Contains("Requested speaker:\nBA", StringComparison.OrdinalIgnoreCase))
                     {
                         return """
-                            { "speaker": "BA", "text": "How would you handle a late requirement change that affects the checkout flow and multiple stakeholders?", "followUpText": "How would you document and communicate that impact?", "hintKeywords": ["impact", "stakeholders", "decision log"] }
+                            { "speaker": "BA", "text": "How would you handle a late requirement change that affects the checkout flow and multiple stakeholders?", "followUpText": null, "hintKeywords": ["impact", "stakeholders", "decision log"] }
                             """;
                     }
 
@@ -326,10 +343,11 @@ public sealed class InterviewSystemTests
                 {
                     "questions": [
                         { "speaker": "PM", "text": "Question 1", "followUpText": null, "hintKeywords": ["impact"] },
-                        { "speaker": "PM", "text": "Question 2", "followUpText": "Follow up", "hintKeywords": ["ownership"] },
-                        { "speaker": "DEV", "text": "Question 3", "followUpText": "Follow up", "hintKeywords": ["trade-offs"] },
-                        { "speaker": "BA", "text": "Question 4", "followUpText": "Follow up", "hintKeywords": ["alignment"] },
-                        { "speaker": "HR", "text": "Question 5", "followUpText": null, "hintKeywords": ["closing"] }
+                        { "speaker": "DEV", "text": "Question 2", "followUpText": "Follow up", "hintKeywords": ["ownership"] },
+                        { "speaker": "DEV", "text": "Question 3", "followUpText": null, "hintKeywords": ["trade-offs"] },
+                        { "speaker": "DEV", "text": "Question 4", "followUpText": null, "hintKeywords": ["debugging"] },
+                        { "speaker": "BA", "text": "Question 5", "followUpText": null, "hintKeywords": ["alignment"] },
+                        { "speaker": "HR", "text": "Question 6", "followUpText": null, "hintKeywords": ["closing"] }
                     ]
                 }
                 """);
