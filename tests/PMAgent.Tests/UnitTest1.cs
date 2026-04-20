@@ -1,10 +1,23 @@
 ﻿using Microsoft.Extensions.Logging.Abstractions;
+using PMAgent.Application.Abstractions;
 using PMAgent.Application.Models;
 using PMAgent.Infrastructure;
 using PMAgent.Infrastructure.Services;
 using PMAgent.Infrastructure.Tools;
 
 namespace PMAgent.Tests;
+
+/// <summary>
+/// Deterministic LLM stub — echoes the user prompt back as output so tests can
+/// assert that goals and context flow through the agent pipeline unchanged.
+/// JSON-based responses are intentionally not returned here so the ReAct Think
+/// step falls back to the rule-based sequence, keeping tests fully deterministic.
+/// </summary>
+file sealed class FakeEchoLlmClient : ILlmClient
+{
+    public Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default) =>
+        Task.FromResult(userPrompt);
+}
 
 public class RuleBasedAgentPlannerTests
 {
@@ -30,8 +43,13 @@ public class RuleBasedAgentPlannerTests
 
 public class AgentExecutorTests
 {
-    private static AgentExecutor BuildExecutor() =>
-        new([new ScopeAnalysisTool(), new RiskAssessmentTool(), new ActionPlannerTool()], NullLogger<AgentExecutor>.Instance);
+    private static AgentExecutor BuildExecutor()
+    {
+        var fakeLlm = new FakeEchoLlmClient();
+        return new(
+            [new ScopeAnalysisTool(fakeLlm), new RiskAssessmentTool(fakeLlm), new ActionPlannerTool(fakeLlm)],
+            NullLogger<AgentExecutor>.Instance);
+    }
 
     [Fact]
     public async Task RunAsync_ProducesIsFinalStep()

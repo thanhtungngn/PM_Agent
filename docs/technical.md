@@ -16,14 +16,18 @@ PMAgent.slnx
 │   │   ├── Abstractions/
 │   │   │   ├── Harness/         → IHarnessScenarioProvider, IHarnessRunner,
 │   │   │   │                      IHarnessAssertionEngine, IHarnessReportSink
-│   │   │   └── ...              → IAgentTool, IAgentExecutor, IOrchestratorAgent, etc.
+│   │   │   └── ...              → IAgentTool, IAgentExecutor, IOrchestratorAgent,
+│   │   │                          IAgentMemory, IAgentPlanner, etc.
 │   │   └── Models/
 │   │       ├── Harness/         → HarnessScenario, HarnessAssertion,
 │   │       │                      HarnessScenarioResult, HarnessReport
 │   │       └── ...              → AgentStep, AgentRunRequest, InterviewQuestion, etc.
 │   ├── PMAgent.Domain           → Domain entities (extensible placeholder)
-│   └── PMAgent.Infrastructure   → AgentExecutor, OrchestratorAgent,
-│                                  Tools/, Agents/, Harness/, DI registration
+│   └── PMAgent.Infrastructure   → AgentExecutor (ReAct + IAgentMemory),
+│                                  InMemoryAgentMemory, OrchestratorAgent (LLM routing),
+│                                  LlmAgentPlanner, Tools/ (LLM-backed),
+│                                  Agents/ (including HiringOrchestrationAgent),
+│                                  Harness/, DI registration
 └── tests/
     └── PMAgent.Tests            → xUnit unit tests
 ```
@@ -47,28 +51,43 @@ The executor follows a **ReAct** (Reasoning + Acting) pattern. Each iteration of
 ┌─────────────────────────────────────────────────────────┐
 │  Iteration N                                            │
 │                                                         │
-│  1. THINK      Decide next action based on goal +       │
-│                accumulated context + completed steps    │
+│  1. THINK      LLM decides next action based on goal +  │
+│                IAgentMemory context + completed steps   │
+│                Falls back to rule-based if LLM fails    │
 │                                                         │
 │  2. ACTION     Select a tool by name                    │
 │                                                         │
 │  3. INPUT      Pass a string input to the tool          │
 │                                                         │
-│  4. OUTPUT     Receive the tool's string result         │
+│  4. OUTPUT     Receive the LLM-generated tool result    │
 │                                                         │
 │  5. IsFinal?   true  → append step, break loop         │
-│                false → append output to context, +1     │
+│                false → record output in IAgentMemory    │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **Iteration trace (default tool sequence):**
 
 ```
-Iteration 0: Think → scope_analysis    (IsFinal: false)
-Iteration 1: Think → risk_assessment   (IsFinal: false)
-Iteration 2: Think → action_planner    (IsFinal: false)
-Iteration 3: Think → finalize          (IsFinal: true)  ← loop exits
+Iteration 0: Think (LLM) → scope_analysis    (IsFinal: false)
+Iteration 1: Think (LLM) → risk_assessment   (IsFinal: false)
+Iteration 2: Think (LLM) → action_planner    (IsFinal: false)
+Iteration 3: Think (LLM) → finalize          (IsFinal: true)  ← loop exits
 ```
+
+### LLM-driven Think step
+
+`AgentExecutor` now accepts an optional `ILlmClient`. When provided, the Think step sends the goal, step history, and accumulated `IAgentMemory` context to the LLM using a ReAct-style system prompt. The LLM responds with structured JSON:
+
+```json
+// To invoke a tool
+{"thought": "My reasoning", "action": "scope_analysis", "actionInput": "..."}
+
+// To finalize
+{"thought": "My reasoning", "isFinal": true}
+```
+
+If the LLM is unavailable or returns an unparseable response, the executor automatically falls back to the built-in rule-based sequence (`scope_analysis → risk_assessment → action_planner → finalize`).
 
 ### IsFinal flag
 
@@ -447,7 +466,23 @@ bool ShouldEarlyStop(IReadOnlyCollection<AgentTaskResult> completedResults);
 bool ShouldFallbackToFullChain(IReadOnlyCollection<AgentTaskResult> completedResults);
 ```
 
-Implemented by `RuleBasedAgentRoutingPolicy`. Provides the baseline routing matrix and transition guards (early-stop and fallback).
+Implemented by `RuleBasedAgentRoutingPolicy`. Provides the baseline routing matrix and transition guards (early-stop and fallback). Used as a fallback when LLM-driven routing is unavailable or returns an unparseable response.
+
+### `IAgentMemory`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IAgentMemory.cs
+void Record(string role, string content);
+string BuildContext();
+IReadOnlyList<MemoryEntry> Entries { get; }
+```
+
+Implemented by `InMemoryAgentMemory`. Maintains a structured append-only log of all role outputs for a single agent run. `AgentExecutor` uses it to build the accumulated context passed to each Think step, replacing manual string concatenation. `HiringOrchestrationAgent` uses it to persist hiring assessments across reasoning phases.
+
+```csharp
+// src/PMAgent.Application/Abstractions/IAgentMemory.cs
+sealed record MemoryEntry(string Role, string Content, DateTimeOffset RecordedAt);
+```
 
 ### `IHiringWorkflowService`
 
@@ -559,6 +594,8 @@ Implemented by `ConfigurableInterviewQuestionProvider`. `BuildQuestionsAsync` st
 
 ## Built-in Tools
 
+Each tool now calls `ILlmClient` with a focused system prompt for its domain, producing context-aware output that depends on the actual goal and accumulated reasoning context.
+
 | Tool name | Class | File |
 |---|---|---|
 | `scope_analysis` | `ScopeAnalysisTool` | `src/PMAgent.Infrastructure/Tools/ScopeAnalysisTool.cs` |
@@ -567,12 +604,12 @@ Implemented by `ConfigurableInterviewQuestionProvider`. `BuildQuestionsAsync` st
 
 ### How to add a new tool
 
-1. Create a class implementing `IAgentTool` in `src/PMAgent.Infrastructure/Tools/`.
+1. Create a class implementing `IAgentTool` in `src/PMAgent.Infrastructure/Tools/`. Inject `ILlmClient` and define a `SystemPrompt` constant.
 2. Register it in `DependencyInjection.cs`:
    ```csharp
    services.AddScoped<IAgentTool, YourNewTool>();
    ```
-3. Update the `Think` method inside `AgentExecutor` to invoke the new tool at the right point in the reasoning sequence.
+3. The LLM-driven Think step in `AgentExecutor` will automatically include the new tool in its system prompt and may invoke it when reasoning about the goal.
 4. **Update `docs/technical.md`** — add a row to the Built-in Tools table.
 5. **Update `docs/business.md`** — if the tool adds user-visible behaviour, describe it in the Capabilities section.
 
@@ -613,17 +650,17 @@ public abstract class SpecializedAgentBase : ISpecializedAgent
 | `BA` | `BusinessAnalystAgent` | Functional requirements, use cases, gap analysis |
 | `DEV` | `DeveloperAgent` | Tech stack, architecture, API design, implementation approach |
 | `TEST` | `TesterAgent` | Test plan, test types, quality gates, coverage targets |
+| `HIRING_ORC` | `HiringOrchestrationAgent` | End-to-end hiring assessment (CV analysis, JD fit, interview plan, recommendation) using `IAgentMemory` |
 
 All agents live in `src/PMAgent.Infrastructure/Agents/`.
 
 ### Orchestrator dispatch sequence
 
-Detailed implementation planning for dynamic routing is tracked in [docs/Routing/plan.md](Routing/plan.md).
+Dispatch is now LLM-driven with a rule-based fallback:
 
-Dispatch is now route-aware:
 - The orchestrator asks `IAgentRoutingPolicy` for an initial route.
-- It can early-stop when a high-confidence `stop` decision is produced.
-- It can fallback to the full-chain route when confidence drops, escalation is requested, or an agent fails.
+- After each agent completes, the orchestrator asks the `ILlmClient` what role should run next (`continue`, `stop`, or `escalate`).
+- If the LLM response is unavailable or unparseable, it falls back to rule-based guards: early-stop when a high-confidence `stop` decision is produced, or fallback to full-chain when confidence drops, escalation is requested, or an agent fails.
 
 ```
 OrchestratorAgent.RunAsync(OrchestrationRequest)
@@ -632,8 +669,12 @@ OrchestratorAgent.RunAsync(OrchestrationRequest)
 ├── while route has pending roles
 │   ├── dispatch AgentTask(role, brief, accumulatedContext)
 │   ├── append output to accumulatedContext
-│   ├── if ShouldFallbackToFullChain(results) => enqueue missing full-chain roles
-│   └── if ShouldEarlyStop(results) => break
+│   ├── ask ILlmClient: "what role should run next?"
+│   │   ├── LLM says "stop"      → break loop
+│   │   ├── LLM says "escalate"  → enqueue missing full-chain roles
+│   │   ├── LLM says "continue"  → enqueue nextRole if not yet run
+│   │   └── LLM unavailable/invalid → rule-based fallback (ShouldFallbackToFullChain / ShouldEarlyStop)
+│   └── repeat
 └── builds OrchestrationResult(Summary, AgentOutputs)
 ```
 
@@ -663,18 +704,22 @@ OrchestratorAgent.RunAsync(OrchestrationRequest)
 ## `AgentExecutor` — Internal Flow
 
 ```
-AgentExecutor(IEnumerable<IAgentTool> tools)
+AgentExecutor(IEnumerable<IAgentTool> tools, ILogger logger, ILlmClient? llm = null)
 │  Builds: Dictionary<string, IAgentTool>  (case-insensitive by tool Name)
+│  Creates: InMemoryAgentMemory for the run
 │
 └── RunAsync(AgentRunRequest request)
       │
-      ├── runningContext = request.Context
+      ├── memory.Record("CONTEXT", request.Context)
       │
       └── for iteration in [0, MaxIterations)
             │
-            ├── Think(goal, runningContext, completedSteps)
-            │     Inspects completed step actions to decide next tool
-            │     Returns: (thought, action, actionInput, isFinal)
+            ├── ThinkAsync(goal, memory.BuildContext(), completedSteps)
+            │     ├── if ILlmClient available:
+            │     │     → call LLM with ReAct system prompt + step history
+            │     │     → parse JSON: {thought, action, actionInput} or {thought, isFinal}
+            │     │     → on error: fall back to rule-based
+            │     └── ThinkRuleBased: scope_analysis → risk_assessment → action_planner → finalize
             │
             ├── if isFinal
             │     actionOutput = BuildFinalAnswer(goal, completedSteps)
@@ -687,7 +732,7 @@ AgentExecutor(IEnumerable<IAgentTool> tools)
             │
             ├── steps.Add(new AgentStep(thought, action, input, output, isFinal))
             │
-            ├── runningContext += "\n[ACTION]: actionOutput"
+            ├── memory.Record(action.ToUpperInvariant(), actionOutput)
             │
             └── if isFinal → break
       │
@@ -998,7 +1043,7 @@ if (llmSettings.Provider == LlmProvider.Ollama)
 else
     services.AddScoped<ILlmClient, OpenAiLlmClient>();  // production
 
-services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>(); // legacy endpoint
+services.AddScoped<IAgentPlanner, LlmAgentPlanner>();     // LLM-backed planner
 services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>(); // baseline dynamic route rules
 services.AddSingleton(hiringWorkflowSettings);
 services.AddScoped<IInterviewQuestionProvider, ConfigurableInterviewQuestionProvider>();
@@ -1006,17 +1051,20 @@ services.AddScoped<IHiringFitScoringAgent, LlmHiringFitScoringAgent>();
 services.AddScoped<IInterviewScoringAgent, LlmInterviewScoringAgent>();
 services.AddScoped<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
-services.AddScoped<IAgentTool, ScopeAnalysisTool>();        // registered as IAgentTool
-services.AddScoped<IAgentTool, RiskAssessmentTool>();        // all resolved together
-services.AddScoped<IAgentTool, ActionPlannerTool>();         // by IEnumerable<IAgentTool>
+services.AddTransient<IAgentMemory, InMemoryAgentMemory>();   // fresh instance per agent
+
+services.AddScoped<IAgentTool, ScopeAnalysisTool>();          // registered as IAgentTool
+services.AddScoped<IAgentTool, RiskAssessmentTool>();          // all resolved together
+services.AddScoped<IAgentTool, ActionPlannerTool>();           // by IEnumerable<IAgentTool>
 
 services.AddScoped<IAgentExecutor, AgentExecutor>();
 
-services.AddScoped<ISpecializedAgent, ProductOwnerAgent>();  // registered as ISpecializedAgent
-services.AddScoped<ISpecializedAgent, ProjectManagerAgent>(); // all resolved together
-services.AddScoped<ISpecializedAgent, BusinessAnalystAgent>();// by IEnumerable<ISpecializedAgent>
+services.AddScoped<ISpecializedAgent, ProductOwnerAgent>();   // registered as ISpecializedAgent
+services.AddScoped<ISpecializedAgent, ProjectManagerAgent>();  // all resolved together
+services.AddScoped<ISpecializedAgent, BusinessAnalystAgent>(); // by IEnumerable<ISpecializedAgent>
 services.AddScoped<ISpecializedAgent, DeveloperAgent>();
 services.AddScoped<ISpecializedAgent, TesterAgent>();
+services.AddScoped<ISpecializedAgent, HiringOrchestrationAgent>(); // LLM-driven hiring agent
 
 services.AddScoped<IOrchestratorAgent, OrchestratorAgent>();
 
@@ -1030,7 +1078,9 @@ services.AddScoped<IHarnessRunner, HarnessRunner>();
 
 Health check services are always registered because the API maps `/health` in every environment. The Ollama-specific probe is added only when `LlmSettings.Provider = Ollama`.
 
-`AgentExecutor` receives all `IAgentTool` registrations via constructor injection as `IEnumerable<IAgentTool>`. `OrchestratorAgent` uses the same pattern with `IEnumerable<ISpecializedAgent>`. Adding a new agent requires only one `AddScoped` line.
+`AgentExecutor` receives all `IAgentTool` registrations via constructor injection as `IEnumerable<IAgentTool>`, plus the shared `ILlmClient` for LLM-driven Think steps. `OrchestratorAgent` uses the same pattern with `IEnumerable<ISpecializedAgent>` and receives `ILlmClient` for LLM-driven routing decisions after each agent completes. Adding a new agent requires only one `AddScoped` line.
+
+`IAgentMemory` is registered as `Transient` so each component that injects it (e.g. `HiringOrchestrationAgent`) receives its own fresh memory instance, preventing state leakage between parallel requests.
 
 The hiring workflow now also receives a singleton `HiringWorkflowSettings` object bound from configuration. This centralises fallback interview templates, semantic scoring dimensions, and HR screening thresholds in one place.
 
@@ -1148,9 +1198,9 @@ LlmSettings__Provider=OpenAI LlmSettings__ApiKey=sk-... dotnet test --filter "Ca
 | Test class | Test | What is validated |
 |---|---|---|
 | `RuleBasedAgentPlannerTests` | `BuildPlanAsync_ReturnsActionsAndRisks` | Legacy planner returns actions and risks |
-| `AgentExecutorTests` | `RunAsync_ProducesIsFinalStep` | At least one step has `IsFinal = true` |
+| `AgentExecutorTests` | `RunAsync_ProducesIsFinalStep` | At least one step has `IsFinal = true` (tools injected with `FakeEchoLlmClient`) |
 | `AgentExecutorTests` | `RunAsync_LastStepIsAlwaysFinal` | The last step is always the final step |
-| `AgentExecutorTests` | `RunAsync_AllThreeToolsAreInvoked` | All three built-in tools execute in a normal run |
+| `AgentExecutorTests` | `RunAsync_AllThreeToolsAreInvoked` | All three built-in tools execute; rule-based fallback used when LLM returns non-JSON |
 | `AgentExecutorTests` | `RunAsync_EachStepHasNonEmptyThoughtAndOutput` | Every step has non-empty `Thought` and `ActionOutput` |
 | `AgentExecutorTests` | `RunAsync_FinalAnswerContainsGoal` | `FinalAnswer` includes the original goal string |
 | `AgentExecutorTests` | `RunAsync_RespectsMaxIterationsGuard` | `MaxIterations = 1` produces exactly one step |

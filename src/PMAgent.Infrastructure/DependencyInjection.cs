@@ -32,16 +32,20 @@ public static class DependencyInjection
         else
             services.AddScoped<ILlmClient, OpenAiLlmClient>();
 
-        // Simple rule-based planner (legacy endpoint)
-        services.AddScoped<IAgentPlanner, RuleBasedAgentPlanner>();
+        // LLM-backed planner — produces context-aware plans via the language model
+        services.AddScoped<IAgentPlanner, LlmAgentPlanner>();
         services.AddScoped<IAgentRoutingPolicy, RuleBasedAgentRoutingPolicy>();
         services.AddScoped<IHiringFitScoringAgent, LlmHiringFitScoringAgent>();
         services.AddScoped<IInterviewQuestionProvider, ConfigurableInterviewQuestionProvider>();
         services.AddScoped<IInterviewScoringAgent, LlmInterviewScoringAgent>();
         services.AddScoped<IHiringWorkflowService, InMemoryHiringWorkflowService>();
 
+        // Agent memory — transient so each agent instance gets its own fresh memory.
+        services.AddTransient<IAgentMemory, InMemoryAgentMemory>();
+
         // Agent tools — registered as IAgentTool so they are all resolved
         // by IEnumerable<IAgentTool> inside AgentExecutor.
+        // Each tool now delegates to ILlmClient for LLM-backed analysis.
         services.AddScoped<IAgentTool, ScopeAnalysisTool>();
         services.AddScoped<IAgentTool, RiskAssessmentTool>();
         services.AddScoped<IAgentTool, ActionPlannerTool>();
@@ -57,6 +61,7 @@ public static class DependencyInjection
         services.AddScoped<ISpecializedAgent, BusinessAnalystAgent>();
         services.AddScoped<ISpecializedAgent, DeveloperAgent>();
         services.AddScoped<ISpecializedAgent, TesterAgent>();
+        services.AddScoped<ISpecializedAgent, HiringOrchestrationAgent>();
 
         // Orchestrator
         services.AddScoped<IOrchestratorAgent, OrchestratorAgent>();
