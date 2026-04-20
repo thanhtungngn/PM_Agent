@@ -484,6 +484,15 @@ Implemented by `InMemoryAgentMemory`. Maintains a structured append-only log of 
 sealed record MemoryEntry(string Role, string Content, DateTimeOffset RecordedAt);
 ```
 
+### `IAgentPlanner`
+
+```csharp
+// src/PMAgent.Application/Abstractions/IAgentPlanner.cs
+Task<PlanningResponse> BuildPlanAsync(PlanningRequest request, CancellationToken ct);
+```
+
+Implemented by `LlmAgentPlanner` (default, registered in DI). Calls `ILlmClient` with `ProjectName`, `Goal`, `TeamMembers`, and `Constraints` to produce a context-aware plan. Expects JSON output `{summary, nextActions[], risks[]}` and has a deterministic fallback. `RuleBasedAgentPlanner` still exists for backward-compatible tests but is no longer the default registration.
+
 ### `IHiringWorkflowService`
 
 ```csharp
@@ -937,7 +946,7 @@ The hiring console keeps the active session in browser storage, renders a transc
 
 ### `POST /api/planning/next-actions` _(legacy)_
 
-Calls the rule-based `RuleBasedAgentPlanner`. Returns a flat `PlanningResponse` (summary, next actions, risks). Does not use the agent loop.
+Calls `RuleBasedAgentPlanner` (no longer the default DI registration — `LlmAgentPlanner` is used by default, but the legacy class remains for backward-compatible tests). Returns a flat `PlanningResponse` (summary, next actions, risks). Does not use the agent loop.
 
 ---
 

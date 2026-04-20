@@ -29,14 +29,16 @@ It replaces the manual effort of running three separate planning sessions (scope
 The agent works by cycling through a four-phase loop — **Think, Action, Input, Output** — until it decides it has gathered enough information to give a final answer.
 
 ```
-Think  →  What do I need to find out next?
+Think  →  What do I need to find out next? (LLM-driven)
 Action →  Which capability should I use?
 Input  →  What information do I pass to it?
-Output →  What did I learn?
+Output →  What did I learn? (stored in agent memory)
            ↓
        IsFinal = yes → deliver the answer
        IsFinal = no  → loop back to Think
 ```
+
+The Think step now calls the LLM with the goal, accumulated memory context, and the list of available capabilities. The LLM responds with a structured JSON decision — `{"thought": "...", "action": "scope_analysis", "actionInput": "..."}` — rather than following a hard-coded sequence. If the LLM is unavailable, a deterministic fallback sequence runs instead.
 
 In practice, a planning run looks like this:
 
@@ -56,6 +58,11 @@ In practice, a planning run looks like this:
 - **Action planning** — produces a milestone-based plan with owners and review cadence.
 - **Transparent reasoning** — every step the agent takes is visible in the response, so stakeholders can audit or challenge the plan.
 - **Configurable depth** — the `maxIterations` setting controls how many reasoning steps the agent is allowed to take, giving you a cost/quality trade-off knob.
+- **LLM-driven ReAct loop** — the agent's Think step now calls the LLM to decide which tool to use next, given the goal and accumulated context. The LLM produces structured JSON (`thought`, `action`, `actionInput`) rather than following a hard-coded tool sequence. If the LLM is unavailable, the system falls back automatically to a deterministic rule-based sequence.
+- **LLM-backed planning** — `LlmAgentPlanner` calls the LLM with project name, goal, team, and constraints to produce context-aware plans with concrete next actions and risks, instead of returning a static template.
+- **Agent memory** — each agent run maintains an `IAgentMemory` instance that records all tool outputs and context entries in insertion order. The accumulated context is passed into each subsequent LLM Think step so reasoning is grounded in prior work rather than reconstructed from scratch.
+- **LLM-driven orchestrator routing** — after each specialized agent completes, the orchestrator asks the LLM which role should run next (`continue`, `stop`, or `escalate`). This makes the multi-agent routing dynamic rather than fully pre-planned. Rule-based fallback applies automatically when the LLM is unavailable.
+- **One-shot hiring assessment** — `HiringOrchestrationAgent` (role `HIRING_ORC`) performs a complete end-to-end hiring evaluation in a single LLM-driven pass: CV analysis, JD fit per requirement, screening decision with confidence, interview plan, and final recommendation. Useful for rapid pre-screening or bulk CV evaluation without running a live multi-turn interview.
 - **Staged hiring workflow** — supports HR-only screening first, explicit user approvals, role-based interview turns, interview scoring, per-candidate file folder, live Q&A logging, structured follow-up questions, clarification replies, candidate hints, and persisted HR notes.
 - **LLM-first interview system** — the hiring flow now asks the LLM once to generate a technical interview question bank from the project brief, JD, and CV, then uses runtime prompts only for clarification, feedback, and follow-up control. For each hiring request, it first infers the current JD's stack priorities and gives extra weight to programming languages, frameworks, system design, databases, and agile/scrum methodology, then biases technical questions toward the candidate's demonstrated overlap with those exact priorities, with a smaller number of transferability questions for important but less-proven requirements. Candidate-facing prompts and evaluation notes also mirror the dominant language of the interview context when possible.
 - **Locked interview language** — before the main questions begin, the interviewer asks the candidate to choose English or Vietnamese. The rest of the interview then follows that one language consistently, including generated questions, fallback templates, clarification replies, and feedback turns.
@@ -75,8 +82,9 @@ The orchestrator mode dispatches the project brief to a virtual start-up deliver
 | **BA** (Business Analyst) | Functional requirements, use cases, gap analysis |
 | **DEV** (Developer) | Tech stack choice, architecture, API design, implementation approach |
 | **TEST** (Tester) | Test plan, quality gates, coverage targets, sample test cases |
+| **HIRING_ORC** (Hiring Orchestration Agent) | End-to-end candidate assessment: CV analysis, JD fit per requirement, screening decision, interview plan, and final recommendation — all in one LLM-driven pass |
 
-Each selected role builds on what the previous selected roles produced, so the DEV's architecture is shaped by the BA's requirements, and the TEST's quality gates are aligned with the DEV's tech stack choices.
+Each selected role builds on what the previous selected roles produced, so the DEV's architecture is shaped by the BA's requirements, and the TEST's quality gates are aligned with the DEV's tech stack choices. After each role completes, the orchestrator asks the LLM which role should run next, making the dispatch dynamic rather than fully pre-planned.
 
 ---
 
@@ -261,12 +269,14 @@ This design has two business benefits:
 | **Context** | Background information that helps the agent reason (e.g., constraints, team size) |
 | **AgentStep** | One iteration of the reasoning loop: Think → Action → Input → Output |
 | **IsFinal** | A flag that signals the agent is done reasoning and ready to deliver the answer |
+| **ReAct Pattern** | Reasoning + Acting — the agent loop where the LLM decides the next action, a tool executes it, and the LLM reasons over the output before deciding what to do next |
+| **IAgentMemory** | An append-only log that accumulates all tool outputs and context entries for a single agent run, so each Think step builds on prior work rather than starting from scratch |
 | **Scope Analysis** | The process of defining what is and is not part of the project |
 | **Risk Assessment** | The process of identifying what could go wrong and how to prevent it |
 | **Action Plan** | A structured list of next steps with owners and deadlines |
 | **MaxIterations** | The maximum number of reasoning steps the agent may take in one run |
-| **Orchestrator** | The coordinator that dispatches the project brief to each specialized agent in sequence |
-| **Specialized Agent** | A virtual team member (PO, PM, HR, BA, DEV, TEST) that produces a role-specific deliverable |
+| **Orchestrator** | The coordinator that dispatches the project brief to each specialized agent. After each agent completes, the orchestrator asks the LLM which role should run next |
+| **Specialized Agent** | A virtual team member (PO, PM, HR, BA, DEV, TEST, HIRING_ORC) that produces a role-specific deliverable |
 | **ProjectBrief** | A plain-language description of the project handed to the orchestrator |
 | **AgentTaskResult** | The deliverable produced by a single specialized agent |
 | **OrchestrationResult** | The aggregated output from all specialized agents plus a cross-role summary |
@@ -275,6 +285,7 @@ This design has two business benefits:
 | **CandidateCv** | Extracted CV text used for semantic fit analysis and interview preparation in hiring mode |
 | **TargetSeniority** | Optional hiring input that sets the expected level directly (`AUTO`, `JUNIOR`, `MID`, `SENIOR`) |
 | **TechnicalInterviewRoles** | Optional list of technical interview packs to generate in hiring mode (`DEV`, `TEST`) |
+| **HiringOrchestrationAgent** | The specialized agent (`HIRING_ORC`) that performs a complete one-shot hiring assessment using LLM reasoning and `IAgentMemory`: CV analysis, JD fit, screening decision, interview plan, and final recommendation |
 | **Hiring Session** | A stateful interview workflow with approvals, transcript turns, score updates, and HR notes |
 | **SeniorityLevel** | The resolved hiring level used to calibrate screening, questions, and evaluation throughout the session |
 | **Screening Fit Score** | The HR gate score produced by semantic LLM assessment to decide whether the CV should move beyond initial screening |
@@ -285,6 +296,7 @@ This design has two business benefits:
 | **Candidate Folder** | A per-session directory (`candidate-{sessionId}/`) created at session start that holds JD keywords, CV keywords, and the live Q&A log |
 | **Question Pack** | The staged interview set generated primarily by the LLM for PM, technical, BA, and HR interview turns, with each next question derived from the live session notes during runtime |
 | **Scoring Rubric** | The configurable interview scoring model that defines thresholds and broad evaluation dimensions for semantic LLM evaluation rather than direct keyword matching |
+| **LlmAgentPlanner** | The LLM-backed implementation of `IAgentPlanner` that generates context-aware project plans with concrete next actions and risks, replacing the previous static template planner |
 | **Harness** | A built-in scenario runner that validates agent outputs deterministically without a live LLM |
 | **HarnessScenario** | A named test case that defines the input brief, expected output sections, decision, and optionally fault-injection flags |
 | **HarnessReport** | The aggregated result of a harness run, including pass rate, per-scenario results, and timing; written to `harness-reports/` as JSON and Markdown |

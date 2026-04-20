@@ -13,19 +13,28 @@ For a one-page management brief, see [hiring-workflow-executive-brief.md](hiring
 
 The current Hiring Process is a stateful, approval-driven interview orchestration model exposed through `IHiringWorkflowService` and `/api/hiring/sessions`.
 
-At a high level, the solution does five things:
+There are now **two distinct hiring paths** available, depending on whether you need a governed interview session or a one-shot structured assessment:
+
+| Path | Entry Point | Description |
+|---|---|---|
+| **Staged interview workflow** | `POST /api/hiring/sessions` | Approval-gated, multi-turn panel interview with scoring and artifacts |
+| **One-shot hiring orchestration** | `POST /api/orchestrator/run` with `workflow=hiring` | `HiringOrchestrationAgent` (role `HIRING_ORC`) performs full CV analysis, JD fit, interview planning, and recommendation in a single LLM-driven pass using `IAgentMemory` |
+
+At a high level, the staged interview workflow does six things:
 
 1. Screens the candidate semantically against the project brief and JD.
 2. Requires explicit approval before moving deeper into the process.
 3. Locks the interview language before the main interview begins.
 4. Generates a one-shot interview question bank focused on the current JD priorities and the candidate's demonstrated overlap.
 5. Scores each accepted answer incrementally and can stop the interview early when confidence drops below the acceptable threshold.
+6. Persists session context (notes, Q&A log, candidate folder) for review and auditability.
 
 This is no longer a keyword-matching workflow and no longer a purely hard-coded interview path. It is now a hybrid orchestration model:
 
 - deterministic state machine for approvals and session control
 - LLM-first reasoning for screening, question generation, and scoring
 - structured fallbacks for resilience when model output is weak or invalid
+- optional one-shot `HiringOrchestrationAgent` path for rapid screening and interview planning without the multi-turn interview runtime
 
 ---
 
@@ -50,11 +59,13 @@ The current model is therefore not “fully dynamic AI interview generation.” 
 
 | Component | Responsibility |
 |---|---|
-| `IHiringWorkflowService` | Owns the session state machine and runtime orchestration |
+| `IHiringWorkflowService` | Owns the session state machine and runtime orchestration for the staged interview path |
+| `HiringOrchestrationAgent` | Provides a one-shot LLM-driven hiring path using `IAgentMemory` for context accumulation; exposed as role `HIRING_ORC` in the orchestrator |
 | `IHiringFitScoringAgent` | Performs semantic HR screening before interview start |
 | `IInterviewQuestionProvider` | Builds the interview question bank and conversational interviewer replies |
 | `IInterviewScoringAgent` | Evaluates accepted candidate answers and returns score + feedback metadata |
-| Candidate Folder Artifacts | Persist reusable markdown and review material for each session |
+| `IAgentMemory` | Maintains an append-only log of hiring context entries; used by `HiringOrchestrationAgent` to accumulate CV analysis, fit assessment, and interview planning across reasoning phases |
+| Candidate Folder Artifacts | Persist reusable markdown and review material for each staged session |
 
 ### 3.2 Runtime State Model
 
@@ -71,6 +82,8 @@ The workflow uses these stages:
 `created` exists only as an internal bootstrap state before the first formal session result is returned.
 
 ### 3.3 Architecture Shape
+
+**Staged interview workflow (multi-turn, approval-gated):**
 
 ```text
 Client/UI
@@ -91,7 +104,24 @@ InMemoryHiringWorkflowService
             |- hiring-session-{sessionId}.md
 ```
 
-The important point here is that the orchestration service owns the state machine, while the LLM-backed services provide bounded reasoning inside that machine.
+**One-shot hiring orchestration path (LLM-driven, via OrchestratorAgent):**
+
+```text
+Client/UI
+   |
+   v
+OrchestratorController
+   |
+   v
+OrchestratorAgent (LLM-driven routing)
+   |
+   v
+HiringOrchestrationAgent  [role: HIRING_ORC]
+   |----> ILlmClient  (CV analysis + JD fit + interview plan + recommendation)
+   +----> IAgentMemory (PROJECT_BRIEF → HIRING_CONTEXT → HIRING_ORC output)
+```
+
+The important point is that both paths share the same `ILlmClient` and `IAgentMemory` abstractions. The staged workflow owns the turn-by-turn control flow, while `HiringOrchestrationAgent` delegates all decision-making to the LLM in a single reasoning pass.
 
 ### 3.4 Component View
 
@@ -99,27 +129,35 @@ The important point here is that the orchestration service owns the state machin
 flowchart LR
    UI[Client / Browser UI]
    API[HiringWorkflowController]
+   ORC[OrchestratorController]
    WF[InMemoryHiringWorkflowService]
+   HORC[HiringOrchestrationAgent\nrole: HIRING_ORC]
+   MEM[IAgentMemory]
    FIT[LlmHiringFitScoringAgent]
    QP[ConfigurableInterviewQuestionProvider]
    SCORE[LlmInterviewScoringAgent]
    FILES["Candidate Artifacts\njd-keywords.md\ncv-keywords.md\ninterview-qa.md\nhiring-session-{sessionId}.md"]
 
    UI --> API
+   UI --> ORC
    API --> WF
+   ORC --> HORC
    WF --> FIT
    WF --> QP
    WF --> SCORE
    WF --> FILES
    QP --> FILES
+   HORC --> MEM
 
    classDef runtime fill:#eef6ff,stroke:#2b6cb0,color:#12324a;
    classDef reasoning fill:#f4f7ec,stroke:#6b8e23,color:#283618;
    classDef storage fill:#fff7e6,stroke:#c77d00,color:#6b3e00;
+   classDef memory fill:#f0f0ff,stroke:#5050cc,color:#111166;
 
-   class UI,API,WF runtime;
-   class FIT,QP,SCORE reasoning;
+   class UI,API,ORC,WF runtime;
+   class FIT,QP,SCORE,HORC reasoning;
    class FILES storage;
+   class MEM memory;
 ```
 
 This view complements the sequence diagram later in the document:
@@ -129,7 +167,70 @@ This view complements the sequence diagram later in the document:
 
 ---
 
-## 4. End-to-End Runtime Flow
+## 3b. One-Shot Hiring Orchestration Path
+
+### When to Use This Path
+
+Use `HiringOrchestrationAgent` (role `HIRING_ORC`) when you want a rapid, single-pass structured assessment of a candidate without running a live multi-turn interview. This is useful for:
+
+- initial screening pipelines that need a written assessment before scheduling a real interview
+- bulk CV evaluation where turn-by-turn interaction is not practical
+- supplementary assessments that run in parallel with or after the staged interview
+
+### How It Works
+
+`HiringOrchestrationAgent` is an `ISpecializedAgent` implementation registered in the orchestrator's agent pool. It uses `IAgentMemory` to accumulate context across its reasoning phases:
+
+```
+HiringOrchestrationAgent.ExecuteAsync(AgentTask)
+│
+├── memory.Record("PROJECT_BRIEF", task.Goal)
+├── memory.Record("HIRING_CONTEXT", task.Context)  ← contains JD and CV
+│
+├── LLM call with SystemPrompt + BuildUserMessage(task)
+│   Produces structured markdown covering:
+│   ├── ## CV Analysis
+│   ├── ## JD Fit Assessment  (Strong Match | Partial Match | Gap per requirement)
+│   ├── ## Screening Decision (Proceed | Hold | Reject + confidence %)
+│   ├── ## Interview Plan     (stages, panel, questions — when Proceed or Hold)
+│   └── ## Final Recommendation
+│
+├── memory.Record("HIRING_ORC", output)  ← downstream agents may reference this
+│
+└── returns AgentTaskResult(Role="HIRING_ORC", Output=structuredMarkdown)
+```
+
+### Invoking It via the Orchestrator
+
+Trigger it by including `HIRING_ORC` in the orchestration context, or let the LLM-driven routing inside `OrchestratorAgent` enqueue it automatically when a hiring workflow is detected:
+
+```json
+{
+  "projectBrief": "Hire a backend engineer for the platform team",
+  "context": "JD: Need C#, ASP.NET Core, PostgreSQL...\nCV: 5 years ASP.NET Core, SQL, Docker...",
+  "workflow": "hiring",
+  "jobDescription": "Need C#, ASP.NET Core, PostgreSQL, Docker, and API design experience.",
+  "candidateCv": "Built ASP.NET Core APIs with PostgreSQL, Docker, Azure deployment pipelines."
+}
+```
+
+The output will be a markdown document containing all five assessment sections, suitable for direct review or downstream use.
+
+### IAgentMemory in the Hiring Path
+
+`IAgentMemory` replaces manual context concatenation for the `HiringOrchestrationAgent` path. Each entry is appended with role, content, and timestamp. The `BuildContext()` method formats them as `[ROLE]:\ncontent` blocks:
+
+```
+[PROJECT_BRIEF]:
+Hire a backend engineer...
+
+[HIRING_CONTEXT]:
+JD: Need C#... CV: 5 years...
+```
+
+This context is available for any downstream agent that follows `HIRING_ORC` in the orchestration chain, giving them full assessment history without reprocessing the raw JD and CV text.
+
+---
 
 ### 4.1 Session Bootstrap and HR Screening
 
@@ -738,15 +839,21 @@ Expected value:
 
 The current Hiring Process is a good example of a pragmatic hybrid architecture.
 
-It is not trying to be a fully autonomous interviewing system, and that is a strength. Instead, it uses deterministic orchestration for control, LLM reasoning for semantic quality, and structured fallbacks for safety.
+The system now provides two complementary paths:
 
-In its current form, the model is already suitable for:
+- **Staged interview workflow** — deterministic orchestration for control, LLM reasoning for semantic quality, and structured fallbacks for safety. Suitable for interactive, multi-turn panel interviews where explainability and step-by-step control matter.
+- **One-shot hiring orchestration** (`HiringOrchestrationAgent`) — LLM-driven assessment that uses `IAgentMemory` to accumulate context across reasoning phases and produces a full evaluation in one pass. Suitable for rapid screening, pre-assessment, or pipeline integration.
+
+Neither path tries to be a fully autonomous interviewing system, and that is a strength. The staged path uses hard-controlled transitions where predictability is important. The one-shot path uses LLM-driven decision making where breadth and speed are priorities.
+
+In their current forms, both models are suitable for:
 
 - internal hiring process experiments
 - guided recruiting workflows
 - hiring tooling where explainability and control matter more than full AI autonomy
 
-Its strongest qualities are governance, relevance, and conversational realism.
+The staged workflow's strongest qualities are governance, relevance, and conversational realism.
 Its weakest points are in-memory runtime durability, bounded skill taxonomy coverage, and limited adaptive replanning after the interview starts.
 
-That is a reasonable architectural position for the current maturity level of the solution.
+The `HiringOrchestrationAgent` path's strongest quality is its simplicity: one LLM call with full context, structured output, and memory persistence for downstream use.
+Its limitation is that it produces a static assessment rather than an interactive session with real-time scoring.
