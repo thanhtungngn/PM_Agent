@@ -110,7 +110,7 @@ public sealed class OrchestratorAgent : IOrchestratorAgent
                 }
                 else if (!string.IsNullOrWhiteSpace(llmDecision.NextRole)
                     && !executedRoles.Contains(llmDecision.NextRole)
-                    && !pendingRoles.Contains(llmDecision.NextRole, StringComparer.OrdinalIgnoreCase))
+                    && !pendingRoles.Any(r => r.Equals(llmDecision.NextRole, StringComparison.OrdinalIgnoreCase)))
                 {
                     pendingRoles.Enqueue(llmDecision.NextRole);
                 }

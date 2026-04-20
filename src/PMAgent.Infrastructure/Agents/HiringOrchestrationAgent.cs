@@ -68,7 +68,8 @@ public sealed class HiringOrchestrationAgent : ISpecializedAgent
         AgentTask task,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("[{Role}] Starting. Goal: {Goal}", Role, task.Goal);
+        _logger.LogInformation("[{Role}] Starting. Goal: {Goal}", Role,
+            task.Goal.ReplaceLineEndings(" "));
         var sw = Stopwatch.StartNew();
 
         // Seed memory with all available inputs so the LLM has full context.
@@ -84,7 +85,8 @@ public sealed class HiringOrchestrationAgent : ISpecializedAgent
 
         sw.Stop();
         _logger.LogInformation("[{Role}] Completed in {ElapsedMs} ms.", Role, sw.ElapsedMilliseconds);
-        _logger.LogDebug("[{Role}] Output:\n{Output}", Role, output);
+        _logger.LogDebug("[{Role}] Output:\n{Output}", Role,
+            output.ReplaceLineEndings(" "));
 
         return new AgentTaskResult(
             Role,
